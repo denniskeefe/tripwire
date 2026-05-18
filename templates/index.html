@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tripwire — OSINT Monitor</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="logo">
+      <span class="logo-icon">⚡</span>
+      <span class="logo-text">Tripwire</span>
+      <span class="logo-sub">OSINT Monitor</span>
+    </div>
+    <div class="header-stats" id="headerStats">
+      <span class="stat"><span id="statActive">—</span> active</span>
+      <span class="stat alert-stat"><span id="statAlerts">—</span> alerts today</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── Add Targets Panel ── -->
+  <section class="panel" id="addPanel">
+    <h2 class="panel-title">Add Targets</h2>
+    <form id="addForm">
+      <div class="form-row">
+        <div class="form-group grow">
+          <label for="urlInput">Profile URLs <span class="hint">— one per line, paste as many as you like</span></label>
+          <textarea id="urlInput" rows="5"
+            placeholder="https://x.com/username&#10;https://reddit.com/user/username&#10;https://example.com/profile/123"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="labelInput">Label prefix <span class="hint">optional</span></label>
+          <input type="text" id="labelInput" placeholder="Subject A">
+        </div>
+        <div class="form-group narrow">
+          <label for="intervalInput">Check every <span class="hint">(minutes)</span></label>
+          <input type="number" id="intervalInput" value="15" min="5" max="1440">
+        </div>
+        <div class="form-group align-end">
+          <button type="submit" class="btn btn-primary" id="addBtn">
+            <span class="btn-icon">＋</span> Add Targets
+          </button>
+        </div>
+      </div>
+      <div id="addError" class="error-msg hidden"></div>
+    </form>
+  </section>
+
+  <!-- ── Monitored Targets Table ── -->
+  <section class="panel" id="targetsPanel">
+    <div class="panel-header">
+      <h2 class="panel-title">Monitored Targets</h2>
+      <div class="panel-actions">
+        <input type="text" id="searchInput" placeholder="Filter targets…" class="search-input">
+      </div>
+    </div>
+    <div id="targetsLoading" class="loading-row">Loading…</div>
+    <div id="targetsEmpty" class="empty-row hidden">No targets yet. Add some above.</div>
+    <table id="targetsTable" class="hidden">
+      <thead>
+        <tr>
+          <th>Label</th>
+          <th>URL</th>
+          <th>Platform</th>
+          <th>Interval</th>
+          <th>Last Checked</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="targetsBody"></tbody>
+    </table>
+  </section>
+
+  <!-- ── Alert History ── -->
+  <section class="panel" id="alertsPanel">
+    <div class="panel-header">
+      <h2 class="panel-title">Alert History</h2>
+      <span id="alertsBadge" class="badge hidden"></span>
+    </div>
+    <div id="alertsLoading" class="loading-row">Loading…</div>
+    <div id="alertsEmpty" class="empty-row hidden">No alerts yet — Tripwire will notify you when a target changes.</div>
+    <div id="alertsList"></div>
+  </section>
+
+</main>
+
+<!-- ── Alert Detail Modal ── -->
+<div id="modal" class="modal-backdrop hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modalTitle">Change Details</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-meta" id="modalMeta"></div>
+      <pre id="modalDiff" class="diff-view"></pre>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
