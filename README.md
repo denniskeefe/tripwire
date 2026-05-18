@@ -76,7 +76,7 @@ python3 -m venv .venv
 ```bash
 .venv/bin/python3 app.py
 ```
-Open **http://localhost:5000** in your browser.
+Open **http://localhost:5500** in your browser.
 
 ---
 
@@ -172,7 +172,7 @@ The dashboard talks to a simple JSON API you can also hit directly:
 
 **Add targets via curl:**
 ```bash
-curl -X POST http://localhost:5000/api/targets \
+curl -X POST http://localhost:5500/api/targets \
   -H 'Content-Type: application/json' \
   -d '{
     "urls_raw": "https://x.com/handle\nhttps://reddit.com/user/handle",
