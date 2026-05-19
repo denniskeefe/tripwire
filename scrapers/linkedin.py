@@ -1,18 +1,13 @@
 """
 LinkedIn scraper using Playwright (headless Chromium).
 
-LinkedIn requires JavaScript AND login to view profile content.
-Without cookies the scraper will only see the login wall.
+LinkedIn requires login to view profile content. Without cookies the scraper
+will attempt the page but will almost always be redirected to an auth wall.
 
 Cookie setup:
   1. Log in to linkedin.com in Chrome.
-  2. Export cookies to a JSON file using the "Get cookies.txt LOCALLY" extension
-     (choose JSON format, not Netscape).
+  2. Export cookies using "Get cookies.txt LOCALLY" extension (JSON format).
   3. Set LINKEDIN_COOKIES_FILE=/path/to/linkedin_cookies.json in your .env file.
-
-What is extracted (when logged in):
-  - Recent post text and timestamps from the Activity feed
-  - Falls back to full visible page text if posts can't be isolated
 """
 
 import json
@@ -27,8 +22,15 @@ except ImportError:
 
 from config import LINKEDIN_COOKIES_FILE
 
-PAGE_TIMEOUT  = 35_000   # ms — LinkedIn is slow
-WAIT_AFTER_LOAD = 4_000  # ms — let feed render
+PAGE_TIMEOUT    = 35_000  # ms — LinkedIn is slow
+WAIT_AFTER_LOAD =  4_000  # ms — let feed render
+
+LOGIN_WALLS = (
+    "linkedin.com/login",
+    "linkedin.com/authwall",
+    "linkedin.com/uas/login",
+    "linkedin.com/signup",
+)
 
 
 def _load_cookies() -> list:
@@ -59,44 +61,33 @@ def _load_cookies() -> list:
 
 def _extract_posts(page) -> list[str]:
     """Pull recent post text from the profile's Activity feed."""
-    posts = []
-
-    # Try the activity feed URL variant first (most reliable for posts)
     selectors = [
-        ".feed-shared-update-v2__description",   # post body
-        ".update-components-text",               # newer layout
-        "span[dir='ltr']",                       # fallback text spans
+        ".feed-shared-update-v2__description",
+        ".update-components-text",
+        "span[dir='ltr']",
     ]
-
+    posts = []
     for sel in selectors:
-        els = page.query_selector_all(sel)
-        if els:
-            for el in els[:10]:
-                try:
-                    text = el.inner_text().strip()
-                    if text and len(text) > 20:
-                        posts.append(text)
-                except Exception:
-                    continue
+        for el in page.query_selector_all(sel)[:10]:
+            try:
+                text = el.inner_text().strip()
+                if text and len(text) > 20:
+                    posts.append(text)
+            except Exception:
+                continue
         if posts:
             break
-
     return posts
 
 
-def _navigate_to_activity(page, profile_url: str) -> bool:
-    """Try navigating to the profile's recent activity page."""
+def _navigate_to_activity(page, profile_url: str):
     base = profile_url.rstrip("/")
-    if "/recent-activity" not in base:
-        activity_url = base + "/recent-activity/all/"
-    else:
-        activity_url = base
+    activity_url = base if "/recent-activity" in base else base + "/recent-activity/all/"
     try:
         page.goto(activity_url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
         page.wait_for_timeout(WAIT_AFTER_LOAD)
-        return True
     except Exception:
-        return False
+        pass
 
 
 class LinkedInScraper(BaseScraper):
@@ -109,16 +100,7 @@ class LinkedInScraper(BaseScraper):
                 error="Playwright not installed. Run: pip install playwright && playwright install chromium",
             )
 
-        cookies = _load_cookies()
-        if not cookies:
-            return ScrapeResult(
-                success=False,
-                error=(
-                    "LinkedIn requires login to view profiles. "
-                    "Export your LinkedIn cookies and set LINKEDIN_COOKIES_FILE in .env — "
-                    "see the README for instructions."
-                ),
-            )
+        cookies = _load_cookies()  # empty list is fine — we try anyway
 
         try:
             with sync_playwright() as pw:
@@ -130,23 +112,28 @@ class LinkedInScraper(BaseScraper):
                         "Chrome/124.0.0.0 Safari/537.36"
                     ),
                     viewport={"width": 1280, "height": 900},
+                    locale="en-US",
                 )
-                ctx.add_cookies(cookies)
-                page = ctx.new_page()
+                if cookies:
+                    ctx.add_cookies(cookies)
 
-                # Navigate to the activity feed for this profile
+                page = ctx.new_page()
                 _navigate_to_activity(page, url)
 
-                # Check if we got redirected to login wall
-                if "linkedin.com/login" in page.url or "linkedin.com/authwall" in page.url:
+                # Detect login wall
+                if any(wall in page.url for wall in LOGIN_WALLS):
                     browser.close()
+                    if cookies:
+                        return ScrapeResult(
+                            success=False,
+                            error="LinkedIn redirected to login — cookies may be expired. Re-export and update LINKEDIN_COOKIES_FILE.",
+                        )
                     return ScrapeResult(
                         success=False,
-                        error="LinkedIn redirected to login — cookies may be expired. Re-export and update LINKEDIN_COOKIES_FILE.",
+                        error="LinkedIn requires login to view profiles. Export your cookies and set LINKEDIN_COOKIES_FILE in .env.",
                     )
 
                 posts = _extract_posts(page)
-
                 if posts:
                     combined = "\n---\n".join(posts)
                     browser.close()
@@ -156,18 +143,14 @@ class LinkedInScraper(BaseScraper):
                         content_excerpt=combined[:800],
                     )
 
-                # Fallback: hash all visible body text
+                # Fallback: full visible text
                 body_text = page.inner_text("body")
                 lines = [l for l in body_text.splitlines() if l.strip()]
                 clean = "\n".join(lines)
-
                 browser.close()
 
                 if not clean:
-                    return ScrapeResult(
-                        success=False,
-                        error="No content found on LinkedIn profile page.",
-                    )
+                    return ScrapeResult(success=False, error="No content found on LinkedIn page.")
 
                 return ScrapeResult(
                     success=True,

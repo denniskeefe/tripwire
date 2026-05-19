@@ -1,18 +1,13 @@
 """
 Facebook scraper using Playwright (headless Chromium).
 
-Facebook requires JavaScript AND login to view most content.
-Without cookies the scraper will be blocked or redirected to login.
+Public Pages may work without cookies. Private profiles and Groups require
+a logged-in session via cookie injection.
 
-Cookie setup:
+Cookie setup (if needed):
   1. Log in to facebook.com in Chrome.
-  2. Export cookies to a JSON file using the "Get cookies.txt LOCALLY" extension
-     (choose JSON format, not Netscape).
+  2. Export cookies using "Get cookies.txt LOCALLY" extension (JSON format).
   3. Set FACEBOOK_COOKIES_FILE=/path/to/facebook_cookies.json in your .env file.
-
-What is extracted (when logged in):
-  - Recent post text from profile/page/group timelines
-  - Falls back to full visible page text if posts can't be isolated
 """
 
 import json
@@ -27,8 +22,14 @@ except ImportError:
 
 from config import FACEBOOK_COOKIES_FILE
 
-PAGE_TIMEOUT   = 35_000  # ms
-WAIT_AFTER_LOAD = 4_000  # ms
+PAGE_TIMEOUT    = 35_000  # ms
+WAIT_AFTER_LOAD =  4_000  # ms
+
+LOGIN_WALLS = (
+    "facebook.com/login",
+    "facebook.com/r.php",
+    "facebook.com/checkpoint",
+)
 
 
 def _load_cookies() -> list:
@@ -59,17 +60,15 @@ def _load_cookies() -> list:
 
 def _extract_posts(page) -> list[str]:
     """Pull recent post text from the timeline."""
-    posts = []
     selectors = [
-        '[data-ad-preview="message"]',       # post body (profiles/pages)
-        '[data-testid="post_message"]',       # older layout
-        '.userContent',                       # legacy
-        'div[dir="auto"]',                    # generic text containers
+        '[data-ad-comet-preview="message"]',  # newer layout
+        '[data-ad-preview="message"]',         # page posts
+        '[data-testid="post_message"]',        # older layout
+        '.userContent',                        # legacy
     ]
-    seen = set()
+    seen, posts = set(), []
     for sel in selectors:
-        els = page.query_selector_all(sel)
-        for el in els[:15]:
+        for el in page.query_selector_all(sel)[:15]:
             try:
                 text = el.inner_text().strip()
                 if text and len(text) > 30 and text not in seen:
@@ -92,16 +91,7 @@ class FacebookScraper(BaseScraper):
                 error="Playwright not installed. Run: pip install playwright && playwright install chromium",
             )
 
-        cookies = _load_cookies()
-        if not cookies:
-            return ScrapeResult(
-                success=False,
-                error=(
-                    "Facebook requires login to view content. "
-                    "Export your Facebook cookies and set FACEBOOK_COOKIES_FILE in .env — "
-                    "see the README for instructions."
-                ),
-            )
+        cookies = _load_cookies()  # empty list is fine — we try anyway
 
         try:
             with sync_playwright() as pw:
@@ -113,23 +103,39 @@ class FacebookScraper(BaseScraper):
                         "Chrome/124.0.0.0 Safari/537.36"
                     ),
                     viewport={"width": 1280, "height": 900},
+                    locale="en-US",
                 )
-                ctx.add_cookies(cookies)
-                page = ctx.new_page()
+                if cookies:
+                    ctx.add_cookies(cookies)
 
+                page = ctx.new_page()
                 page.goto(url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
                 page.wait_for_timeout(WAIT_AFTER_LOAD)
 
                 # Detect login wall
-                if "facebook.com/login" in page.url or "facebook.com/r.php" in page.url:
+                if any(wall in page.url for wall in LOGIN_WALLS):
+                    browser.close()
+                    if cookies:
+                        return ScrapeResult(
+                            success=False,
+                            error="Facebook redirected to login — cookies may be expired. Re-export and update FACEBOOK_COOKIES_FILE.",
+                        )
+                    return ScrapeResult(
+                        success=False,
+                        error="Facebook requires login for this content. Export your cookies and set FACEBOOK_COOKIES_FILE in .env.",
+                    )
+
+                # Also check for cookie-consent / registration interstitials
+                body_text = page.inner_text("body")
+                login_hints = ["log in to facebook", "create new account", "you must log in"]
+                if any(h in body_text.lower() for h in login_hints) and len(body_text) < 3000:
                     browser.close()
                     return ScrapeResult(
                         success=False,
-                        error="Facebook redirected to login — cookies may be expired. Re-export and update FACEBOOK_COOKIES_FILE.",
+                        error="Facebook is showing a login prompt. Set FACEBOOK_COOKIES_FILE in .env to monitor this target.",
                     )
 
                 posts = _extract_posts(page)
-
                 if posts:
                     combined = "\n---\n".join(posts)
                     browser.close()
@@ -139,17 +145,13 @@ class FacebookScraper(BaseScraper):
                         content_excerpt=combined[:800],
                     )
 
-                # Fallback: hash all visible body text
-                body_text = page.inner_text("body")
+                # Fallback: full visible text
                 lines = [l for l in body_text.splitlines() if l.strip()]
                 clean = "\n".join(lines)
                 browser.close()
 
                 if not clean:
-                    return ScrapeResult(
-                        success=False,
-                        error="No content found on Facebook page.",
-                    )
+                    return ScrapeResult(success=False, error="No content found on Facebook page.")
 
                 return ScrapeResult(
                     success=True,
