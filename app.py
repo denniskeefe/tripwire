@@ -20,9 +20,11 @@ app.secret_key = config.SECRET_KEY
 # ---------------------------------------------------------------------------
 
 def detect_platform(url: str) -> str:
-    url = url.lower()
-    if re.search(r"(twitter\.com|x\.com)/\w", url):
+    u = url.lower()
+    if re.search(r"(twitter\.com|x\.com)/\w", u):
         return "twitter"
+    if re.search(r"linkedin\.com/in/", u):
+        return "linkedin"
     return "generic"
 
 

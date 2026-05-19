@@ -15,6 +15,7 @@ DEFAULT_CHECK_INTERVAL = int(os.getenv("DEFAULT_CHECK_INTERVAL", "15"))
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
 
-TWITTER_COOKIES_FILE = os.getenv("TWITTER_COOKIES_FILE", "")
+TWITTER_COOKIES_FILE  = os.getenv("TWITTER_COOKIES_FILE", "")
+LINKEDIN_COOKIES_FILE = os.getenv("LINKEDIN_COOKIES_FILE", "")
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "tripwire.db")

@@ -200,6 +200,7 @@ tbody td {
   text-transform: uppercase;
 }
 .badge-twitter  { background: #e8f4fd; color: #1a8cd8; }
+.badge-linkedin { background: #e8f0f8; color: #0a66c2; }
 .badge-generic  { background: #f0f0f0; color: #555; }
 
 .status-badge {
