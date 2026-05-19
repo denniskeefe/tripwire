@@ -17,5 +17,6 @@ SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
 
 TWITTER_COOKIES_FILE  = os.getenv("TWITTER_COOKIES_FILE", "")
 LINKEDIN_COOKIES_FILE = os.getenv("LINKEDIN_COOKIES_FILE", "")
+FACEBOOK_COOKIES_FILE = os.getenv("FACEBOOK_COOKIES_FILE", "")
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "tripwire.db")

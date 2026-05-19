@@ -23,8 +23,10 @@ def detect_platform(url: str) -> str:
     u = url.lower()
     if re.search(r"(twitter\.com|x\.com)/\w", u):
         return "twitter"
-    if re.search(r"linkedin\.com/in/", u):
+    if re.search(r"linkedin\.com/(in|company)/", u):
         return "linkedin"
+    if re.search(r"facebook\.com/", u):
+        return "facebook"
     return "generic"
 
 

@@ -218,9 +218,10 @@ function updateHeaderStats() {
 // ── Helpers ───────────────────────────────────────────────────
 function platformBadge(platform) {
   const map = {
-    twitter:  ['badge-twitter',  '𝕏 Twitter'],
-    linkedin: ['badge-linkedin', 'in LinkedIn'],
-    generic:  ['badge-generic',  '🌐 Generic'],
+    twitter:  ['badge-twitter',   '𝕏 Twitter'],
+    linkedin: ['badge-linkedin',  'in LinkedIn'],
+    facebook: ['badge-facebook',  'f Facebook'],
+    generic:  ['badge-generic',   '🌐 Generic'],
   };
   const [cls, label] = map[platform] || map.generic;
   return `<span class="platform-badge ${cls}">${label}</span>`;
