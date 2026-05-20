@@ -22,8 +22,8 @@ scheduler = BackgroundScheduler(timezone="UTC")
 
 def _build_change_summary(old_excerpt: str, new_excerpt: str) -> str:
     """Produce a human-readable diff of the two excerpts."""
-    old_lines = old_excerpt.splitlines(keepends=True)
-    new_lines = new_excerpt.splitlines(keepends=True)
+    old_lines = old_excerpt.splitlines()
+    new_lines = new_excerpt.splitlines()
     diff = list(difflib.unified_diff(
         old_lines, new_lines,
         fromfile="previous snapshot",
@@ -32,7 +32,7 @@ def _build_change_summary(old_excerpt: str, new_excerpt: str) -> str:
         n=3,
     ))
     if diff:
-        summary = "".join(diff[:80])   # cap at 80 diff lines
+        summary = "\n".join(diff[:80])  # cap at 80 diff lines
     else:
         summary = "Content hash changed but text diff is empty (binary or encoding change)."
     return summary
