@@ -6,6 +6,10 @@ let alerts   = [];
 let filterText = '';
 let editingPatternsFor = null;
 
+// api() returns null only when the request never completed, which is a very
+// different problem from the server rejecting the request.
+const UNREACHABLE = 'Cannot reach the Tripwire server — check that it is still running.';
+
 // ── Init ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadTargets();
@@ -81,8 +85,10 @@ async function handleAdd(e) {
     document.getElementById('labelInput').value = '';
     await loadTargets();
     flashBanner(`✓ Added ${result.added.length} target(s). Baseline check running in the background.`);
+  } else if (result === null) {
+    showError(errEl, UNREACHABLE);
   } else {
-    showError(errEl, result?.error || 'Failed to add targets.', result?.details);
+    showError(errEl, result.error || 'Failed to add targets.', result.details);
   }
 }
 
@@ -231,8 +237,10 @@ async function savePatterns() {
     closePatterns();
     await loadTargets();
     flashBanner('✓ Ignore patterns saved. They apply from the next check.');
+  } else if (result === null) {
+    showError(errEl, UNREACHABLE);
   } else {
-    showError(errEl, result?.error || 'Failed to save patterns.', result?.details);
+    showError(errEl, result.error || 'Failed to save patterns.', result.details);
   }
 }
 
