@@ -6,9 +6,9 @@ let alerts   = [];
 let filterText = '';
 let editingPatternsFor = null;
 
-// api() returns null only when the request never completed, which is a very
-// different problem from the server rejecting the request.
-const UNREACHABLE = 'Cannot reach the Tripwire server — check that it is still running.';
+// Set by api() whenever it returns null, so callers can explain which of the
+// failure modes actually happened rather than guessing.
+let lastApiError = null;
 
 // ── Init ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -86,7 +86,7 @@ async function handleAdd(e) {
     await loadTargets();
     flashBanner(`✓ Added ${result.added.length} target(s). Baseline check running in the background.`);
   } else if (result === null) {
-    showError(errEl, UNREACHABLE);
+    showError(errEl, apiFailureMessage());
   } else {
     showError(errEl, result.error || 'Failed to add targets.', result.details);
   }
@@ -238,7 +238,7 @@ async function savePatterns() {
     await loadTargets();
     flashBanner('✓ Ignore patterns saved. They apply from the next check.');
   } else if (result === null) {
-    showError(errEl, UNREACHABLE);
+    showError(errEl, apiFailureMessage());
   } else {
     showError(errEl, result.error || 'Failed to save patterns.', result.details);
   }
@@ -358,13 +358,40 @@ function flashBanner(msg) {
   setTimeout(() => { b.style.opacity = '0'; setTimeout(() => b.remove(), 400); }, 3500);
 }
 
+// Returns parsed JSON, or null if the request could not be completed at all.
+// When it returns null, lastApiError says why — the three failure modes need
+// very different things from the user, so they must not share one message.
 async function api(url, opts = {}) {
+  lastApiError = null;
+
+  let res;
   try {
-    const res  = await fetch(url, opts);
-    const json = await res.json();
-    return json;
-  } catch(e) {
-    console.error('API error', url, e);
+    res = await fetch(url, opts);
+  } catch (e) {
+    console.error('API unreachable', url, e);
+    lastApiError = { kind: 'network' };
     return null;
   }
+
+  try {
+    return await res.json();
+  } catch (e) {
+    console.error('API returned non-JSON', url, res.status, e);
+    lastApiError = { kind: res.ok ? 'parse' : 'http', status: res.status };
+    return null;
+  }
+}
+
+function apiFailureMessage() {
+  if (lastApiError?.kind === 'network') {
+    return 'Cannot reach the Tripwire server — check that it is still running.';
+  }
+  if (lastApiError?.kind === 'http') {
+    return `The server returned an error (HTTP ${lastApiError.status}). `
+         + 'Check the server logs — the database may be unwritable.';
+  }
+  if (lastApiError?.kind === 'parse') {
+    return 'The server sent a response Tripwire could not read.';
+  }
+  return 'The request failed.';
 }
