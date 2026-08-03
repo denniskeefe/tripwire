@@ -13,7 +13,8 @@ Monitor social media profiles for new activity and receive instant email alerts 
 - **Bulk URL submission** — paste dozens of profile URLs at once
 - **Multi-platform** — dedicated Twitter/X scraper (Playwright) + generic scraper for any other URL
 - **Scheduled polling** — each target checks on its own configurable interval (minimum 5 minutes)
-- **Change detection** — content is hashed on every check; a unified diff is generated when something changes
+- **Change detection** — content is normalized and hashed on every check; a unified diff over the full page is generated when something changes
+- **Noise filtering** — timestamps, engagement counters, and cache tokens are neutralized before comparison, plus per-target regex ignore patterns
 - **Email alerts** — HTML + plain-text email sent via SMTP the moment a change is detected, with the diff inline
 - **Web dashboard** — add, pause, or delete targets; view live status and browse full alert history with a built-in diff viewer
 
@@ -97,6 +98,39 @@ Platform is detected automatically:
 | `x.com/*` or `twitter.com/*` | Playwright (headless Chromium) |
 | Everything else | requests + BeautifulSoup |
 
+### Noise filtering
+
+Most pages contain text that changes on every fetch without anything actually
+happening: relative timestamps, like and view counters, cache-busting tokens.
+Hashing that raw text would make every check look like a change, so Tripwire
+normalizes content before comparing it — volatile text is replaced with a
+stable placeholder (`<time>`, `<date>`, `<count>`, `<token>`).
+
+Built-in rule groups:
+
+| Group | Neutralizes |
+|---|---|
+| `relative_time` | "2 hours ago", "just now", "· 5h" |
+| `timestamp` | clock times and calendar dates |
+| `engagement` | like / view / follower / comment counters |
+| `tokens` | long hex or base64 strings (nonces, cache keys) |
+
+When a page still has site-specific churn, add **ignore patterns** — per target,
+either when adding it or later via the ⚙ button:
+
+```
+# one regex per line; matching text is dropped before comparison
+^Trending now$
+^#\w+ <count> posts$
+
+# prefix with ! to switch off a built-in group
+!engagement
+```
+
+Patterns run *after* the built-in rules, so write them against the placeholder
+form shown in the dashboard's diff view (`<count>`, not `1.2K`). An invalid
+regex is rejected with the offending line number rather than silently ignored.
+
 ### Alert emails
 When a change is detected you'll receive an email with:
 - Target label, platform, and URL
@@ -107,6 +141,7 @@ When a change is detected you'll receive an email with:
 | Button | Action |
 |---|---|
 | ↻ | Run an immediate manual check |
+| ⚙ | Edit ignore patterns (a dot means some are set) |
 | ⏸ / ▶ | Pause or resume scheduled polling |
 | ✕ | Delete target and all its history |
 | View diff | Open the full diff for any past alert |
@@ -143,14 +178,18 @@ tripwire/
 ├── database.py         # SQLite — targets, snapshots, alerts
 ├── config.py           # Reads .env settings
 ├── scrapers/
-│   ├── base.py         # ScrapeResult dataclass + hash helper
+│   ├── base.py         # ScrapeResult dataclass + hash/normalize helper
+│   ├── normalize.py    # Noise rules + ignore-pattern parsing
 │   ├── generic.py      # requests + BeautifulSoup scraper
-│   └── twitter.py      # Playwright headless Chromium scraper
+│   ├── twitter.py      # Playwright headless Chromium scraper
+│   ├── linkedin.py     # Playwright scraper (activity feed)
+│   └── facebook.py     # Playwright scraper (timeline)
 ├── static/
 │   ├── style.css       # Dashboard styles
 │   └── app.js          # Dashboard logic (vanilla JS)
 ├── templates/
 │   └── index.html      # Single-page web UI
+├── tests/              # python3 -m unittest discover tests
 ├── .env.example        # Configuration template
 └── requirements.txt
 ```
@@ -168,6 +207,8 @@ The dashboard talks to a simple JSON API you can also hit directly:
 | `DELETE` | `/api/targets/<id>` | Remove a target |
 | `POST` | `/api/targets/<id>/toggle` | Pause / resume |
 | `POST` | `/api/targets/<id>/check` | Trigger immediate check |
+| `PUT` | `/api/targets/<id>/patterns` | Replace a target's ignore patterns |
+| `GET` | `/api/noise-rules` | List built-in noise rule group names |
 | `GET` | `/api/alerts` | List recent alerts (`?limit=N`) |
 
 **Add targets via curl:**
@@ -177,8 +218,22 @@ curl -X POST http://localhost:5500/api/targets \
   -d '{
     "urls_raw": "https://x.com/handle\nhttps://reddit.com/user/handle",
     "label_prefix": "Subject A",
-    "check_interval": 10
+    "check_interval": 10,
+    "ignore_patterns": "^Trending now$\n!engagement"
   }'
+```
+
+**Update ignore patterns:**
+```bash
+curl -X PUT http://localhost:5500/api/targets/1/patterns \
+  -H 'Content-Type: application/json' \
+  -d '{"ignore_patterns": "^Trending now$"}'
+```
+
+An invalid spec returns `400` with a `details` array naming each bad line:
+```json
+{"error": "Invalid ignore patterns",
+ "details": ["line 2: invalid regex — unterminated character set at position 0"]}
 ```
 
 ---

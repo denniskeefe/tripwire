@@ -10,6 +10,7 @@ from flask import Flask, jsonify, render_template, request
 import config
 import database as db
 import monitor
+from scrapers.normalize import NOISE_RULES, validate_ignore_spec
 
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
@@ -75,6 +76,11 @@ def api_add_targets():
     check_interval = int(data.get("check_interval", config.DEFAULT_CHECK_INTERVAL))
     check_interval = max(5, min(check_interval, 1440))  # clamp 5 min – 24 h
 
+    ignore_patterns = data.get("ignore_patterns", "") or ""
+    errors = validate_ignore_spec(ignore_patterns)
+    if errors:
+        return jsonify({"error": "Invalid ignore patterns", "details": errors}), 400
+
     added = []
     for i, url in enumerate(urls):
         platform = detect_platform(url)
@@ -84,12 +90,35 @@ def api_add_targets():
         else:
             label = url.rstrip("/").split("/")[-1] or url
 
-        target_id = db.add_target(url, label, platform, check_interval)
+        target_id = db.add_target(url, label, platform, check_interval, ignore_patterns)
         target = db.get_target(target_id)
         monitor.schedule_target(target)
         added.append(target)
 
     return jsonify({"added": added}), 201
+
+
+@app.route("/api/targets/<int:target_id>/patterns", methods=["PUT"])
+def api_update_patterns(target_id):
+    """Replace a target's ignore-pattern spec. Rejects invalid specs outright."""
+    if not db.get_target(target_id):
+        return jsonify({"error": "Not found"}), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    spec = data.get("ignore_patterns", "") or ""
+
+    errors = validate_ignore_spec(spec)
+    if errors:
+        return jsonify({"error": "Invalid ignore patterns", "details": errors}), 400
+
+    db.update_target_patterns(target_id, spec)
+    return jsonify(db.get_target(target_id))
+
+
+@app.route("/api/noise-rules", methods=["GET"])
+def api_noise_rules():
+    """Built-in noise rule groups, so the UI can show what can be disabled."""
+    return jsonify({"groups": sorted(NOISE_RULES)})
 
 
 @app.route("/api/targets/<int:target_id>", methods=["DELETE"])

@@ -141,7 +141,43 @@ textarea { resize: vertical; min-height: 80px; }
 .btn-danger:hover { background: #fee2e2; }
 
 .error-msg { color: var(--red); font-size: 13px; margin-top: 8px; }
+.error-msg ul { margin: 6px 0 0 18px; }
 .hidden { display: none !important; }
+
+/* ── Ignore patterns ─────────────────────────────────────────── */
+.advanced { margin-bottom: 14px; }
+.advanced summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+.advanced summary:hover { color: var(--text); }
+.advanced .form-group { margin-top: 10px; }
+
+.hint-block {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 0 0 10px;
+}
+.hint-block code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 11px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
 
 /* ── Targets Table ───────────────────────────────────────────── */
 .search-input {

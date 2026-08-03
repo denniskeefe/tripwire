@@ -4,11 +4,13 @@
 let targets  = [];
 let alerts   = [];
 let filterText = '';
+let editingPatternsFor = null;
 
 // ── Init ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadTargets();
   loadAlerts();
+  loadRuleGroups();
 
   document.getElementById('addForm').addEventListener('submit', handleAdd);
   document.getElementById('searchInput').addEventListener('input', e => {
@@ -36,6 +38,12 @@ async function loadAlerts() {
   updateHeaderStats();
 }
 
+async function loadRuleGroups() {
+  const data = await api('/api/noise-rules');
+  const el = document.getElementById('ruleGroups');
+  if (el && data && data.groups) el.textContent = data.groups.join(', ');
+}
+
 // ── Add targets ───────────────────────────────────────────────
 async function handleAdd(e) {
   e.preventDefault();
@@ -44,6 +52,7 @@ async function handleAdd(e) {
   const urlsRaw = document.getElementById('urlInput').value.trim();
   const label   = document.getElementById('labelInput').value.trim();
   const interval= parseInt(document.getElementById('intervalInput').value) || 15;
+  const patterns= document.getElementById('patternsInput').value;
 
   errEl.classList.add('hidden');
 
@@ -58,7 +67,10 @@ async function handleAdd(e) {
   const result = await api('/api/targets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ urls_raw: urlsRaw, label_prefix: label, check_interval: interval }),
+    body: JSON.stringify({
+      urls_raw: urlsRaw, label_prefix: label,
+      check_interval: interval, ignore_patterns: patterns,
+    }),
   });
 
   btn.disabled = false;
@@ -70,7 +82,7 @@ async function handleAdd(e) {
     await loadTargets();
     flashBanner(`✓ Added ${result.added.length} target(s). Baseline check running in the background.`);
   } else {
-    showError(errEl, result?.error || 'Failed to add targets.');
+    showError(errEl, result?.error || 'Failed to add targets.', result?.details);
   }
 }
 
@@ -109,6 +121,9 @@ function renderTargets() {
       <td>
         <div class="action-group">
           <button class="btn btn-sm btn-ghost" onclick="checkNow(${t.id})" title="Check now">↻</button>
+          <button class="btn btn-sm btn-ghost" onclick="openPatterns(${t.id})"
+            title="${t.ignore_patterns ? 'Edit ignore patterns' : 'Add ignore patterns'}"
+            >${t.ignore_patterns ? '⚙•' : '⚙'}</button>
           <button class="btn btn-sm btn-ghost" onclick="toggleTarget(${t.id}, ${t.active})"
             title="${t.active ? 'Pause' : 'Resume'}">${t.active ? '⏸' : '▶'}</button>
           <button class="btn btn-sm btn-danger" onclick="deleteTarget(${t.id})" title="Delete">✕</button>
@@ -178,6 +193,52 @@ async function checkNow(id) {
   await loadTargets();
   await loadAlerts();
 }
+
+// ── Ignore patterns editor ────────────────────────────────────
+function openPatterns(id) {
+  const t = targets.find(x => x.id === id);
+  if (!t) return;
+
+  editingPatternsFor = id;
+  document.getElementById('patternsTitle').textContent = `Ignore Patterns — ${t.label}`;
+  document.getElementById('patternsEdit').value = t.ignore_patterns || '';
+  document.getElementById('patternsError').classList.add('hidden');
+  document.getElementById('patternsModal').classList.remove('hidden');
+}
+
+function closePatterns() {
+  editingPatternsFor = null;
+  document.getElementById('patternsModal').classList.add('hidden');
+}
+
+async function savePatterns() {
+  if (editingPatternsFor === null) return;
+
+  const btn   = document.getElementById('patternsSave');
+  const errEl = document.getElementById('patternsError');
+  errEl.classList.add('hidden');
+  btn.disabled = true;
+
+  const result = await api(`/api/targets/${editingPatternsFor}/patterns`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ignore_patterns: document.getElementById('patternsEdit').value }),
+  });
+
+  btn.disabled = false;
+
+  if (result && result.id) {
+    closePatterns();
+    await loadTargets();
+    flashBanner('✓ Ignore patterns saved. They apply from the next check.');
+  } else {
+    showError(errEl, result?.error || 'Failed to save patterns.', result?.details);
+  }
+}
+
+document.getElementById('patternsModal').addEventListener('click', e => {
+  if (e.target === document.getElementById('patternsModal')) closePatterns();
+});
 
 // ── Modal ─────────────────────────────────────────────────────
 function openModal(alertId) {
@@ -269,8 +330,10 @@ function esc(s) {
     .replace(/"/g,'&quot;');
 }
 
-function showError(el, msg) {
-  el.textContent = msg;
+function showError(el, msg, details) {
+  el.innerHTML = esc(msg) + (details?.length
+    ? '<ul>' + details.map(d => `<li>${esc(d)}</li>`).join('') + '</ul>'
+    : '');
   el.classList.remove('hidden');
 }
 

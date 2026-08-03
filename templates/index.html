@@ -35,6 +35,20 @@
             placeholder="https://x.com/username&#10;https://reddit.com/user/username&#10;https://example.com/profile/123"></textarea>
         </div>
       </div>
+      <details class="advanced">
+        <summary>Ignore patterns <span class="hint">— optional, suppress known noise</span></summary>
+        <div class="form-group">
+          <textarea id="patternsInput" rows="3"
+            placeholder="^Trending now$&#10;^#\w+ &lt;count&gt; posts$&#10;!engagement"></textarea>
+          <p class="hint-block">
+            One regex per line — matching text is dropped before comparison.
+            Prefix a line with <code>!</code> to switch off a built-in rule group
+            (<span id="ruleGroups">…</span>), or <code>#</code> for a comment.
+            Patterns run against the normalized text, so match the placeholder
+            form shown in the diff view (e.g. <code>&lt;count&gt;</code>, <code>&lt;time&gt;</code>).
+          </p>
+        </div>
+      </details>
       <div class="form-row">
         <div class="form-group">
           <label for="labelInput">Label prefix <span class="hint">optional</span></label>
@@ -103,6 +117,30 @@
     <div class="modal-body">
       <div class="modal-meta" id="modalMeta"></div>
       <pre id="modalDiff" class="diff-view"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ── Ignore Patterns Editor ── -->
+<div id="patternsModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="patternsTitle">Ignore Patterns</h3>
+      <button class="modal-close" onclick="closePatterns()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="hint-block">
+        Text matching these patterns is removed before Tripwire compares snapshots.
+        Use them to silence anything on the page that churns without meaning.
+      </p>
+      <div class="form-group">
+        <textarea id="patternsEdit" rows="8"></textarea>
+      </div>
+      <div id="patternsError" class="error-msg hidden"></div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost btn-sm" onclick="closePatterns()">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="patternsSave" onclick="savePatterns()">Save</button>
+      </div>
     </div>
   </div>
 </div>

@@ -12,7 +12,7 @@ Cookie setup (if needed):
 
 import json
 import os
-from .base import BaseScraper, ScrapeResult, hash_content
+from .base import BaseScraper, ScrapeResult, build_result
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -84,7 +84,7 @@ def _extract_posts(page) -> list[str]:
 class FacebookScraper(BaseScraper):
     """Playwright-based scraper for Facebook profiles, pages, and groups."""
 
-    def scrape(self, url: str) -> ScrapeResult:
+    def scrape(self, url: str, ignore_spec: str = "") -> ScrapeResult:
         if not PLAYWRIGHT_AVAILABLE:
             return ScrapeResult(
                 success=False,
@@ -96,68 +96,56 @@ class FacebookScraper(BaseScraper):
         try:
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=True)
-                ctx = browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1280, "height": 900},
-                    locale="en-US",
-                )
-                if cookies:
-                    ctx.add_cookies(cookies)
-
-                page = ctx.new_page()
-                page.goto(url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
-                page.wait_for_timeout(WAIT_AFTER_LOAD)
-
-                # Detect login wall
-                if any(wall in page.url for wall in LOGIN_WALLS):
-                    browser.close()
+                try:
+                    ctx = browser.new_context(
+                        user_agent=(
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/124.0.0.0 Safari/537.36"
+                        ),
+                        viewport={"width": 1280, "height": 900},
+                        locale="en-US",
+                    )
                     if cookies:
+                        ctx.add_cookies(cookies)
+
+                    page = ctx.new_page()
+                    page.goto(url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
+                    page.wait_for_timeout(WAIT_AFTER_LOAD)
+
+                    # Detect login wall
+                    if any(wall in page.url for wall in LOGIN_WALLS):
+                        if cookies:
+                            return ScrapeResult(
+                                success=False,
+                                error="Facebook redirected to login — cookies may be expired. Re-export and update FACEBOOK_COOKIES_FILE.",
+                            )
                         return ScrapeResult(
                             success=False,
-                            error="Facebook redirected to login — cookies may be expired. Re-export and update FACEBOOK_COOKIES_FILE.",
+                            error="Facebook requires login for this content. Export your cookies and set FACEBOOK_COOKIES_FILE in .env.",
                         )
-                    return ScrapeResult(
-                        success=False,
-                        error="Facebook requires login for this content. Export your cookies and set FACEBOOK_COOKIES_FILE in .env.",
-                    )
 
-                # Also check for cookie-consent / registration interstitials
-                body_text = page.inner_text("body")
-                login_hints = ["log in to facebook", "create new account", "you must log in"]
-                if any(h in body_text.lower() for h in login_hints) and len(body_text) < 3000:
+                    # Also check for cookie-consent / registration interstitials
+                    body_text = page.inner_text("body")
+                    login_hints = ["log in to facebook", "create new account", "you must log in"]
+                    if any(h in body_text.lower() for h in login_hints) and len(body_text) < 3000:
+                        return ScrapeResult(
+                            success=False,
+                            error="Facebook is showing a login prompt. Set FACEBOOK_COOKIES_FILE in .env to monitor this target.",
+                        )
+
+                    posts = _extract_posts(page)
+                    if posts:
+                        return build_result("\n---\n".join(posts), ignore_spec)
+
+                    # Fallback: full visible text
+                    return build_result(
+                        body_text,
+                        ignore_spec,
+                        empty_error="No content found on Facebook page.",
+                    )
+                finally:
                     browser.close()
-                    return ScrapeResult(
-                        success=False,
-                        error="Facebook is showing a login prompt. Set FACEBOOK_COOKIES_FILE in .env to monitor this target.",
-                    )
-
-                posts = _extract_posts(page)
-                if posts:
-                    combined = "\n---\n".join(posts)
-                    browser.close()
-                    return ScrapeResult(
-                        success=True,
-                        content_hash=hash_content(combined),
-                        content_excerpt=combined[:800],
-                    )
-
-                # Fallback: full visible text
-                lines = [l for l in body_text.splitlines() if l.strip()]
-                clean = "\n".join(lines)
-                browser.close()
-
-                if not clean:
-                    return ScrapeResult(success=False, error="No content found on Facebook page.")
-
-                return ScrapeResult(
-                    success=True,
-                    content_hash=hash_content(clean),
-                    content_excerpt=clean[:800],
-                )
 
         except PWTimeout:
             return ScrapeResult(success=False, error="Facebook page load timed out")

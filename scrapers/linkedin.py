@@ -12,7 +12,7 @@ Cookie setup:
 
 import json
 import os
-from .base import BaseScraper, ScrapeResult, hash_content
+from .base import BaseScraper, ScrapeResult, build_result
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -93,7 +93,7 @@ def _navigate_to_activity(page, profile_url: str):
 class LinkedInScraper(BaseScraper):
     """Playwright-based scraper for LinkedIn profile pages."""
 
-    def scrape(self, url: str) -> ScrapeResult:
+    def scrape(self, url: str, ignore_spec: str = "") -> ScrapeResult:
         if not PLAYWRIGHT_AVAILABLE:
             return ScrapeResult(
                 success=False,
@@ -105,58 +105,46 @@ class LinkedInScraper(BaseScraper):
         try:
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=True)
-                ctx = browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1280, "height": 900},
-                    locale="en-US",
-                )
-                if cookies:
-                    ctx.add_cookies(cookies)
-
-                page = ctx.new_page()
-                _navigate_to_activity(page, url)
-
-                # Detect login wall
-                if any(wall in page.url for wall in LOGIN_WALLS):
-                    browser.close()
+                try:
+                    ctx = browser.new_context(
+                        user_agent=(
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/124.0.0.0 Safari/537.36"
+                        ),
+                        viewport={"width": 1280, "height": 900},
+                        locale="en-US",
+                    )
                     if cookies:
+                        ctx.add_cookies(cookies)
+
+                    page = ctx.new_page()
+                    _navigate_to_activity(page, url)
+
+                    # Detect login wall
+                    if any(wall in page.url for wall in LOGIN_WALLS):
+                        if cookies:
+                            return ScrapeResult(
+                                success=False,
+                                error="LinkedIn redirected to login — cookies may be expired. Re-export and update LINKEDIN_COOKIES_FILE.",
+                            )
                         return ScrapeResult(
                             success=False,
-                            error="LinkedIn redirected to login — cookies may be expired. Re-export and update LINKEDIN_COOKIES_FILE.",
+                            error="LinkedIn requires login to view profiles. Export your cookies and set LINKEDIN_COOKIES_FILE in .env.",
                         )
-                    return ScrapeResult(
-                        success=False,
-                        error="LinkedIn requires login to view profiles. Export your cookies and set LINKEDIN_COOKIES_FILE in .env.",
-                    )
 
-                posts = _extract_posts(page)
-                if posts:
-                    combined = "\n---\n".join(posts)
+                    posts = _extract_posts(page)
+                    if posts:
+                        return build_result("\n---\n".join(posts), ignore_spec)
+
+                    # Fallback: full visible text
+                    return build_result(
+                        page.inner_text("body"),
+                        ignore_spec,
+                        empty_error="No content found on LinkedIn page.",
+                    )
+                finally:
                     browser.close()
-                    return ScrapeResult(
-                        success=True,
-                        content_hash=hash_content(combined),
-                        content_excerpt=combined[:800],
-                    )
-
-                # Fallback: full visible text
-                body_text = page.inner_text("body")
-                lines = [l for l in body_text.splitlines() if l.strip()]
-                clean = "\n".join(lines)
-                browser.close()
-
-                if not clean:
-                    return ScrapeResult(success=False, error="No content found on LinkedIn page.")
-
-                return ScrapeResult(
-                    success=True,
-                    content_hash=hash_content(clean),
-                    content_excerpt=clean[:800],
-                )
 
         except PWTimeout:
             return ScrapeResult(success=False, error="LinkedIn page load timed out")
