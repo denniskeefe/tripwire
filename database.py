@@ -1,13 +1,29 @@
 import sqlite3
-import json
 from datetime import datetime
 from config import DB_PATH
+
+# How many snapshots to retain per target. Snapshots now hold full page text
+# and are only written when content changes, so a small window is plenty of
+# history while keeping the database bounded.
+SNAPSHOT_RETENTION = 50
 
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _add_column_if_missing(conn, table, column, ddl):
+    existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def _migrate(conn):
+    """Bring an existing database up to the current schema."""
+    _add_column_if_missing(conn, "snapshots", "content", "TEXT")
+    _add_column_if_missing(conn, "targets", "ignore_patterns", "TEXT NOT NULL DEFAULT ''")
 
 
 def init_db():
@@ -23,13 +39,15 @@ def init_db():
             created_at TEXT NOT NULL,
             last_checked TEXT,
             last_changed TEXT,
-            status TEXT DEFAULT 'pending'
+            status TEXT DEFAULT 'pending',
+            ignore_patterns TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             target_id INTEGER NOT NULL,
             content_hash TEXT NOT NULL,
+            content TEXT,
             content_excerpt TEXT,
             checked_at TEXT NOT NULL,
             FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
@@ -46,16 +64,18 @@ def init_db():
             FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
         );
     """)
+    _migrate(conn)
     conn.commit()
     conn.close()
 
 
-def add_target(url, label, platform, check_interval):
+def add_target(url, label, platform, check_interval, ignore_patterns=""):
     conn = get_db()
     now = datetime.utcnow().isoformat()
     cur = conn.execute(
-        "INSERT INTO targets (url, label, platform, check_interval, created_at) VALUES (?, ?, ?, ?, ?)",
-        (url, label, platform, check_interval, now),
+        "INSERT INTO targets (url, label, platform, check_interval, created_at, ignore_patterns)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (url, label, platform, check_interval, now, ignore_patterns or ""),
     )
     target_id = cur.lastrowid
     conn.commit()
@@ -94,26 +114,57 @@ def toggle_target(target_id, active):
     conn.close()
 
 
+def update_target_patterns(target_id, ignore_patterns):
+    conn = get_db()
+    conn.execute(
+        "UPDATE targets SET ignore_patterns = ? WHERE id = ?",
+        (ignore_patterns or "", target_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_latest_snapshot(target_id):
+    # Ordered by id, not checked_at: two snapshots written in the same second
+    # would otherwise resolve arbitrarily and diff against the wrong baseline.
     conn = get_db()
     row = conn.execute(
-        "SELECT * FROM snapshots WHERE target_id = ? ORDER BY checked_at DESC LIMIT 1",
+        "SELECT * FROM snapshots WHERE target_id = ? ORDER BY id DESC LIMIT 1",
         (target_id,),
     ).fetchone()
     conn.close()
     return dict(row) if row else None
 
 
-def save_snapshot(target_id, content_hash, content_excerpt):
+def save_snapshot(target_id, content_hash, content, content_excerpt):
+    """Record a new snapshot. Only called when content actually changed."""
     conn = get_db()
     now = datetime.utcnow().isoformat()
     conn.execute(
-        "INSERT INTO snapshots (target_id, content_hash, content_excerpt, checked_at) VALUES (?, ?, ?, ?)",
-        (target_id, content_hash, content_excerpt[:2000] if content_excerpt else "", now),
+        "INSERT INTO snapshots (target_id, content_hash, content, content_excerpt, checked_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (target_id, content_hash, content or "", content_excerpt or "", now),
     )
     conn.execute(
         "UPDATE targets SET last_checked = ?, status = 'ok' WHERE id = ?",
         (now, target_id),
+    )
+    conn.execute(
+        "DELETE FROM snapshots WHERE target_id = ? AND id NOT IN ("
+        "  SELECT id FROM snapshots WHERE target_id = ? ORDER BY id DESC LIMIT ?"
+        ")",
+        (target_id, target_id, SNAPSHOT_RETENTION),
+    )
+    conn.commit()
+    conn.close()
+
+
+def touch_target(target_id):
+    """Record a successful check that found no change, without a new snapshot."""
+    conn = get_db()
+    conn.execute(
+        "UPDATE targets SET last_checked = ?, status = 'ok' WHERE id = ?",
+        (datetime.utcnow().isoformat(), target_id),
     )
     conn.commit()
     conn.close()

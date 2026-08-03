@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from .base import BaseScraper, ScrapeResult, hash_content
+from .base import BaseScraper, ScrapeResult, build_result
 
 HEADERS = {
     "User-Agent": (
@@ -20,7 +20,7 @@ class GenericScraper(BaseScraper):
     Works well for pages that don't require JavaScript rendering.
     """
 
-    def scrape(self, url: str) -> ScrapeResult:
+    def scrape(self, url: str, ignore_spec: str = "") -> ScrapeResult:
         try:
             resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT, allow_redirects=True)
             resp.raise_for_status()
@@ -34,18 +34,4 @@ class GenericScraper(BaseScraper):
                           "header", "aside", "form", "meta", "link"]):
             tag.decompose()
 
-        text = soup.get_text(separator="\n", strip=True)
-
-        # Collapse blank lines
-        lines = [ln for ln in text.splitlines() if ln.strip()]
-        clean = "\n".join(lines)
-
-        if not clean:
-            return ScrapeResult(success=False, error="No visible text content found")
-
-        excerpt = clean[:500]
-        return ScrapeResult(
-            success=True,
-            content_hash=hash_content(clean),
-            content_excerpt=excerpt,
-        )
+        return build_result(soup.get_text(separator="\n", strip=True), ignore_spec)

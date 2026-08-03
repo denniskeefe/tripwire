@@ -15,7 +15,7 @@ Cookie setup:
 import json
 import os
 import time
-from .base import BaseScraper, ScrapeResult, hash_content
+from .base import BaseScraper, ScrapeResult, build_result
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -78,7 +78,7 @@ def _extract_tweets(page) -> list[str]:
 class TwitterScraper(BaseScraper):
     """Playwright-based scraper for Twitter/X profile pages."""
 
-    def scrape(self, url: str) -> ScrapeResult:
+    def scrape(self, url: str, ignore_spec: str = "") -> ScrapeResult:
         if not PLAYWRIGHT_AVAILABLE:
             return ScrapeResult(
                 success=False,
@@ -93,49 +93,36 @@ class TwitterScraper(BaseScraper):
         try:
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=True)
-                ctx = browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1280, "height": 900},
-                )
-
-                if cookies:
-                    ctx.add_cookies(cookies)
-
-                page = ctx.new_page()
-                page.goto(url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
-                page.wait_for_timeout(WAIT_AFTER_LOAD)
-
-                tweets = _extract_tweets(page)
-
-                if not tweets:
-                    # Fallback: hash all visible text (catches login walls, etc.)
-                    body_text = page.inner_text("body")
-                    lines = [l for l in body_text.splitlines() if l.strip()]
-                    clean = "\n".join(lines)
-                    if not clean:
-                        browser.close()
-                        return ScrapeResult(
-                            success=False,
-                            error="No content found — Twitter may require login. See TWITTER_COOKIES_FILE in .env",
-                        )
-                    browser.close()
-                    return ScrapeResult(
-                        success=True,
-                        content_hash=hash_content(clean),
-                        content_excerpt=clean[:500],
+                try:
+                    ctx = browser.new_context(
+                        user_agent=(
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/124.0.0.0 Safari/537.36"
+                        ),
+                        viewport={"width": 1280, "height": 900},
                     )
 
-                combined = "\n".join(tweets)
-                browser.close()
-                return ScrapeResult(
-                    success=True,
-                    content_hash=hash_content(combined),
-                    content_excerpt=combined[:800],
-                )
+                    if cookies:
+                        ctx.add_cookies(cookies)
+
+                    page = ctx.new_page()
+                    page.goto(url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
+                    page.wait_for_timeout(WAIT_AFTER_LOAD)
+
+                    tweets = _extract_tweets(page)
+                    if tweets:
+                        return build_result("\n".join(tweets), ignore_spec)
+
+                    # Fallback: all visible text (catches login walls, etc.)
+                    return build_result(
+                        page.inner_text("body"),
+                        ignore_spec,
+                        empty_error="No content found — Twitter may require login. "
+                                    "See TWITTER_COOKIES_FILE in .env",
+                    )
+                finally:
+                    browser.close()
 
         except PWTimeout:
             return ScrapeResult(success=False, error="Page load timed out")

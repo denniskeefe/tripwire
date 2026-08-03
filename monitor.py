@@ -20,10 +20,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(me
 scheduler = BackgroundScheduler(timezone="UTC")
 
 
-def _build_change_summary(old_excerpt: str, new_excerpt: str) -> str:
-    """Produce a human-readable diff of the two excerpts."""
-    old_lines = old_excerpt.splitlines()
-    new_lines = new_excerpt.splitlines()
+MAX_DIFF_LINES = 200
+
+
+def _build_change_summary(old_text: str, new_text: str) -> str:
+    """
+    Produce a human-readable diff over the full normalized content.
+
+    Diffing the complete text (rather than a truncated excerpt) means changes
+    anywhere on the page show up in the alert, not just changes near the top.
+    """
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
     diff = list(difflib.unified_diff(
         old_lines, new_lines,
         fromfile="previous snapshot",
@@ -31,11 +39,24 @@ def _build_change_summary(old_excerpt: str, new_excerpt: str) -> str:
         lineterm="",
         n=3,
     ))
-    if diff:
-        summary = "\n".join(diff[:80])  # cap at 80 diff lines
-    else:
-        summary = "Content hash changed but text diff is empty (binary or encoding change)."
-    return summary
+
+    if not diff:
+        return "Content hash changed but text diff is empty (binary or encoding change)."
+
+    added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
+    removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
+    header = f"{added} line(s) added, {removed} removed"
+
+    body = diff[:MAX_DIFF_LINES]
+    if len(diff) > MAX_DIFF_LINES:
+        body.append(f"… diff truncated, {len(diff) - MAX_DIFF_LINES} more line(s)")
+
+    return "\n".join([header, ""] + body)
+
+
+def _previous_text(snapshot: dict) -> str:
+    """Full text of a snapshot, falling back to the excerpt for older rows."""
+    return snapshot.get("content") or snapshot.get("content_excerpt") or ""
 
 
 def check_target(target_id: int):
@@ -45,7 +66,7 @@ def check_target(target_id: int):
 
     log.info(f"Checking [{target['label']}] {target['url']}")
     scraper = get_scraper(target["platform"])
-    result = scraper.scrape(target["url"])
+    result = scraper.scrape(target["url"], target.get("ignore_patterns", ""))
 
     if not result.success:
         log.warning(f"  ✗ Scrape failed: {result.error}")
@@ -56,25 +77,22 @@ def check_target(target_id: int):
 
     if prev is None:
         # First check — just store the baseline, no alert
-        db.save_snapshot(target_id, result.content_hash, result.content_excerpt)
+        db.save_snapshot(target_id, result.content_hash, result.content, result.content_excerpt)
         log.info(f"  ✓ Baseline saved for [{target['label']}]")
         return
 
     if result.content_hash == prev["content_hash"]:
-        db.save_snapshot(target_id, result.content_hash, result.content_excerpt)
+        db.touch_target(target_id)
         log.info(f"  ✓ No change for [{target['label']}]")
         return
 
     # Content changed!
     log.info(f"  ★ Change detected for [{target['label']}]!")
-    change_summary = _build_change_summary(
-        prev.get("content_excerpt", ""),
-        result.content_excerpt,
-    )
+    change_summary = _build_change_summary(_previous_text(prev), result.content)
 
     email_sent = send_alert(target, change_summary)
     db.record_alert(target_id, target["label"], target["url"], change_summary, email_sent)
-    db.save_snapshot(target_id, result.content_hash, result.content_excerpt)
+    db.save_snapshot(target_id, result.content_hash, result.content, result.content_excerpt)
 
 
 def _make_job_id(target_id: int) -> str:
