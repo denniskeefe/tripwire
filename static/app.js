@@ -373,6 +373,14 @@ async function api(url, opts = {}) {
     return null;
   }
 
+  // An expired session would otherwise show up as a silent failure on the 30 s
+  // refresh, leaving a stale dashboard on screen. Send the user to log in.
+  if (res.status === 401) {
+    lastApiError = { kind: 'auth' };
+    window.location = '/login?next=' + encodeURIComponent(location.pathname);
+    return null;
+  }
+
   try {
     return await res.json();
   } catch (e) {
@@ -383,6 +391,9 @@ async function api(url, opts = {}) {
 }
 
 function apiFailureMessage() {
+  if (lastApiError?.kind === 'auth') {
+    return 'Your session has expired — signing you back in.';
+  }
   if (lastApiError?.kind === 'network') {
     return 'Cannot reach the Tripwire server — check that it is still running.';
   }

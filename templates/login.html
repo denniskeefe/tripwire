@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — Tripwire</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+
+<div class="login-card">
+  <div class="login-brand">
+    <span class="logo-icon">⚡</span>
+    <span class="logo-text">Tripwire</span>
+    <span class="logo-sub">OSINT Monitor</span>
+  </div>
+
+  <form method="POST" action="/login" class="login-form">
+    <input type="hidden" name="next" value="{{ next }}">
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password"
+             autocomplete="current-password" autofocus required>
+    </div>
+    {% if error %}
+      <div class="error-msg">{{ error }}</div>
+    {% endif %}
+    <button type="submit" class="btn btn-primary login-btn">Sign in</button>
+  </form>
+
+  <p class="login-foot">Authorized access only. Attempts are logged.</p>
+</div>
+
+</body>
+</html>

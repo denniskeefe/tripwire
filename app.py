@@ -7,6 +7,7 @@ import re
 import atexit
 from flask import Flask, jsonify, render_template, request
 
+import auth
 import config
 import database as db
 import monitor
@@ -14,6 +15,10 @@ from scrapers.normalize import NOISE_RULES, validate_ignore_spec
 
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
+
+# Registers the login routes and a guard that rejects every other request
+# without a session. Nothing below this line is reachable anonymously.
+auth.init_app(app)
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +174,7 @@ def api_list_alerts():
 # ---------------------------------------------------------------------------
 
 def create_app():
+    auth.log_startup_state()
     db.init_db()
     monitor.start()
     atexit.register(monitor.stop)

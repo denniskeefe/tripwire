@@ -17,6 +17,7 @@ Monitor social media profiles for new activity and receive instant email alerts 
 - **Noise filtering** — timestamps, engagement counters, and cache tokens are neutralized before comparison, plus per-target regex ignore patterns
 - **Email alerts** — HTML + plain-text email sent via SMTP the moment a change is detected, with the diff inline
 - **Web dashboard** — add, pause, or delete targets; view live status and browse full alert history with a built-in diff viewer
+- **Password-protected** — the dashboard and API require a login; nothing is served anonymously
 
 ---
 
@@ -63,8 +64,13 @@ SMTP_USERNAME=you@gmail.com
 SMTP_PASSWORD=your_app_password
 ANALYST_EMAIL=analyst@yourorg.com
 DEFAULT_CHECK_INTERVAL=15
+DASHBOARD_PASSWORD=pick-something-long
 ```
 > **Gmail users:** use an [App Password](https://myaccount.google.com/apppasswords), not your account password.
+
+> **Dashboard password:** if you leave `DASHBOARD_PASSWORD` unset, Tripwire generates one at
+> startup and prints it to the console. It changes on every restart, so set your own for
+> anything longer-lived than a quick look.
 
 ### 3. Install
 ```bash
@@ -148,6 +154,74 @@ When a change is detected you'll receive an email with:
 
 ---
 
+## Access Control
+
+Tripwire's target list names the people you are watching and its alert history quotes what
+they published, so nothing is served anonymously. Every page and every API route requires a
+login — including URLs that do not exist, which redirect rather than 404, so an anonymous
+visitor cannot map the API by probing.
+
+**There is no way to run it without a password.** With none configured, Tripwire generates
+one for that run and logs it:
+
+```
+WARNING  No DASHBOARD_PASSWORD set — generated one for this run only:
+
+    K7pN2vQxRt4mZbYw8LcF3sHd
+```
+
+### Setting a password
+
+For local use, put it in `.env`:
+```env
+DASHBOARD_PASSWORD=pick-something-long
+```
+
+For anything internet-facing, store a hash instead so the password itself never sits in the
+environment:
+```bash
+.venv/bin/python3 auth.py
+```
+Paste the printed line into `.env` (or your host's environment) as `DASHBOARD_PASSWORD_HASH`.
+A configured hash always wins over a plain-text password.
+
+Changing the password signs out every existing session.
+
+### Sessions
+
+| Setting | Purpose |
+|---|---|
+| `SECRET_KEY` | Signs the session cookie. Unset — or left at the template's placeholder — means a random key per process, so logins end at restart. |
+| `SESSION_LIFETIME_DAYS` | How long a login lasts. Default 7. |
+| `SECURE_COOKIES` | Set to `1` when served over HTTPS so the cookie is never sent in the clear. |
+| `TRUST_PROXY` | Set to `1` behind a reverse proxy so the real client IP is used, not the proxy's. |
+
+Cookies are `HttpOnly` and `SameSite=Lax`, which also keeps another site from driving the
+API with your session.
+
+### Failed logins
+
+Eight failures from one address within ten minutes locks that address out for the rest of
+the window — a correct password included, since otherwise an attacker just keeps guessing.
+A successful login clears the counter. Every attempt, successful or not, is logged with its
+source address.
+
+Behind a proxy, set `TRUST_PROXY=1`. Without it every request appears to come from the proxy
+and the throttle becomes one shared bucket for the whole internet.
+
+### Scripted access
+
+Session cookies are awkward for scripts, so set `API_TOKEN` and send it as a bearer token:
+
+```bash
+curl -H "Authorization: Bearer $API_TOKEN" http://localhost:5500/api/targets
+```
+
+Leave `API_TOKEN` unset and token authentication is off entirely — the API is then reachable
+only from a logged-in session.
+
+---
+
 ## Twitter/X — Authenticated Scraping
 
 Twitter now requires login to view most profile content. Without cookies Tripwire will still detect page-level changes, but tweet text may not be accessible.
@@ -173,6 +247,7 @@ Twitter now requires login to view most profile content. Without cookies Tripwir
 ```
 tripwire/
 ├── app.py              # Flask application + REST API
+├── auth.py             # Login, session guard, brute-force throttle
 ├── monitor.py          # APScheduler background polling engine
 ├── notifier.py         # SMTP email alert (HTML + plain text)
 ├── database.py         # SQLite — targets, snapshots, alerts
@@ -188,7 +263,8 @@ tripwire/
 │   ├── style.css       # Dashboard styles
 │   └── app.js          # Dashboard logic (vanilla JS)
 ├── templates/
-│   └── index.html      # Single-page web UI
+│   ├── index.html      # Single-page web UI
+│   └── login.html      # Login page
 ├── tests/              # python3 -m unittest discover tests
 ├── .env.example        # Configuration template
 └── requirements.txt
@@ -198,7 +274,9 @@ tripwire/
 
 ## REST API
 
-The dashboard talks to a simple JSON API you can also hit directly:
+The dashboard talks to a simple JSON API you can also hit directly. Every endpoint requires
+authentication — send `Authorization: Bearer $API_TOKEN` (see [Access Control](#access-control)),
+or an unauthenticated call gets `401 {"error": "Authentication required"}`.
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -249,7 +327,13 @@ An invalid spec returns `400` with a `details` array naming each bad line:
 | `SMTP_FROM` | same as username | From address shown in alerts |
 | `ANALYST_EMAIL` | — | Recipient(s) — comma-separated for multiple |
 | `DEFAULT_CHECK_INTERVAL` | `15` | Default polling interval in minutes |
-| `SECRET_KEY` | `change-me` | Flask session secret — change in production |
+| `SECRET_KEY` | random per run | Flask session secret — set it to keep logins across restarts |
+| `DASHBOARD_PASSWORD` | generated per run | Dashboard login password |
+| `DASHBOARD_PASSWORD_HASH` | — | Password hash from `.venv/bin/python3 auth.py`; preferred over the above |
+| `API_TOKEN` | — | Bearer token for scripted API access; unset disables token auth |
+| `SESSION_LIFETIME_DAYS` | `7` | How long a login lasts |
+| `SECURE_COOKIES` | `0` | Set to `1` when served over HTTPS |
+| `TRUST_PROXY` | `0` | Set to `1` behind a reverse proxy |
 | `TWITTER_COOKIES_FILE` | — | Path to Twitter/X cookies JSON |
 
 ---

@@ -15,9 +15,14 @@
       <span class="logo-text">Tripwire</span>
       <span class="logo-sub">OSINT Monitor</span>
     </div>
-    <div class="header-stats" id="headerStats">
-      <span class="stat"><span id="statActive">—</span> active</span>
-      <span class="stat alert-stat"><span id="statAlerts">—</span> alerts today</span>
+    <div class="header-right">
+      <div class="header-stats" id="headerStats">
+        <span class="stat"><span id="statActive">—</span> active</span>
+        <span class="stat alert-stat"><span id="statAlerts">—</span> alerts today</span>
+      </div>
+      <form class="logout-form" method="POST" action="/logout">
+        <button type="submit" class="logout-btn">Sign out</button>
+      </form>
     </div>
   </div>
 </header>
