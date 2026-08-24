@@ -14,6 +14,16 @@ services:
         value: /data/tripwire.db
       - key: SECRET_KEY
         generateValue: true
+      # Render generates the dashboard password on first deploy — read it from
+      # the service's Environment tab. Replace it with your own at any time.
+      - key: DASHBOARD_PASSWORD
+        generateValue: true
+      # Render terminates TLS and forwards the real client IP, so cookies can
+      # be HTTPS-only and the login throttle can see per-client addresses.
+      - key: SECURE_COOKIES
+        value: "1"
+      - key: TRUST_PROXY
+        value: "1"
       - key: SMTP_HOST
         value: smtp.gmail.com
       - key: SMTP_PORT
