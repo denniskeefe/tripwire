@@ -16,13 +16,18 @@ from unittest import mock
 
 import database as db
 import monitor
-from scrapers.base import build_result
+from scrapers.base import ScrapeResult, build_result
 
 logging.disable(logging.CRITICAL)  # monitor logs every check; keep test output readable
 
 
 class StubScraper:
-    """Returns queued raw page text, normalized through the real pipeline."""
+    """
+    Returns queued raw page text, normalized through the real pipeline.
+
+    A queued page may instead be a ``Fail("reason")``, which produces the same
+    unsuccessful result a real scraper returns when a fetch breaks.
+    """
 
     def __init__(self, pages):
         self.pages = list(pages)
@@ -31,7 +36,16 @@ class StubScraper:
     def scrape(self, url, ignore_spec=""):
         self.seen_specs.append(ignore_spec)
         raw = self.pages.pop(0) if self.pages else ""
+        if isinstance(raw, Fail):
+            return ScrapeResult(success=False, error=raw.reason)
         return build_result(raw, ignore_spec)
+
+
+class Fail:
+    """Marker for a queued page that should fail to scrape."""
+
+    def __init__(self, reason="connection refused"):
+        self.reason = reason
 
 
 class MonitorTestCase(unittest.TestCase):
@@ -49,7 +63,30 @@ class MonitorTestCase(unittest.TestCase):
         )
         self._patch_alert.start()
 
+        # Failure mail can be told to fail delivery, so the retry path is
+        # testable; recovery mail is only ever recorded.
+        self.failure_mail = []
+        self.failure_mail_delivers = True
+        self.recovery_mail = []
+        self._patch_failure = mock.patch.object(
+            monitor, "send_failure_alert",
+            side_effect=lambda target, error, failures, since="": (
+                self.failure_mail.append((error, failures, since)),
+                self.failure_mail_delivers,
+            )[1],
+        )
+        self._patch_failure.start()
+        self._patch_recovery = mock.patch.object(
+            monitor, "send_recovery_notice",
+            side_effect=lambda target, failures, since="": (
+                self.recovery_mail.append((failures, since)) or True
+            ),
+        )
+        self._patch_recovery.start()
+
     def tearDown(self):
+        self._patch_recovery.stop()
+        self._patch_failure.stop()
         self._patch_alert.stop()
         self._patch_db.stop()
         os.unlink(self.db_path)
@@ -121,6 +158,28 @@ class TestRealChangesAlert(MonitorTestCase):
         self.run_checks(["line one", "line one\nline two"])
         self.assertRegex(self.sent[0], r"\d+ line\(s\) added, \d+ removed")
 
+    def test_status_reads_changed_after_a_change(self):
+        """Regression: the snapshot write used to overwrite this with 'ok'."""
+        target_id, _ = self.run_checks(["before text", "after text"])
+        target = db.get_target(target_id)
+        self.assertEqual(target["status"], "changed")
+        self.assertIsNotNone(target["last_changed"])
+
+    def test_status_returns_to_ok_on_the_next_quiet_check(self):
+        """The badge reports the latest check, not a change that has passed."""
+        target_id, _ = self.run_checks(["before", "after", "after"])
+        self.assertEqual(db.get_target(target_id)["status"], "ok")
+
+    def test_baseline_check_leaves_status_ok(self):
+        target_id, _ = self.run_checks(["first page"])
+        self.assertEqual(db.get_target(target_id)["status"], "ok")
+
+    def test_a_change_still_clears_a_failure_streak(self):
+        target_id, _ = self.run_checks(["before", Fail(), "after"])
+        target = db.get_target(target_id)
+        self.assertEqual(target["status"], "changed")
+        self.assertEqual(target["consecutive_failures"], 0)
+
     def test_alert_row_is_recorded_with_the_diff(self):
         self.run_checks(["before text", "after text"])
         alerts = db.get_alerts()
@@ -161,6 +220,108 @@ class TestSnapshotRetention(MonitorTestCase):
         self.assertIn(f"unique content {len(pages) - 1}", latest["content"])
 
 
+class TestFailureAlerts(MonitorTestCase):
+    """
+    A target that cannot be scraped emits no change alerts, which looks exactly
+    like a target with nothing to report. These cover the mail that breaks that
+    ambiguity.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._patch_threshold = mock.patch.object(monitor.config, "FAILURE_ALERT_THRESHOLD", 3)
+        self._patch_threshold.start()
+
+    def tearDown(self):
+        self._patch_threshold.stop()
+        super().tearDown()
+
+    def test_a_single_failure_does_not_send_mail(self):
+        self.run_checks([Fail("timeout")])
+        self.assertEqual(self.failure_mail, [])
+
+    def test_failures_below_the_threshold_stay_quiet(self):
+        self.run_checks([Fail(), Fail()])
+        self.assertEqual(self.failure_mail, [])
+
+    def test_threshold_reached_sends_one_alert(self):
+        self.run_checks([Fail("cookies expired")] * 3)
+        self.assertEqual(len(self.failure_mail), 1)
+        error, failures, since = self.failure_mail[0]
+        self.assertEqual(error, "cookies expired")
+        self.assertEqual(failures, 3)
+        self.assertTrue(since, "the alert should say when the outage started")
+
+    def test_continued_failure_does_not_re_alert(self):
+        self.run_checks([Fail()] * 8)
+        self.assertEqual(len(self.failure_mail), 1, "one mail per outage, not per check")
+
+    def test_undeliverable_alert_is_retried_on_the_next_check(self):
+        self.failure_mail_delivers = False
+        target_id, _ = self.run_checks([Fail()] * 4)
+        self.assertEqual(len(self.failure_mail), 2, "a failed send must not be recorded as sent")
+        self.assertEqual(db.get_target(target_id)["failure_alert_sent"], 0)
+
+    def test_empty_page_counts_as_a_failure(self):
+        """Markup that yields no text is the quiet way a scraper dies."""
+        self.run_checks(["", "", ""])
+        self.assertEqual(len(self.failure_mail), 1)
+
+    def test_failure_count_is_recorded_on_the_target(self):
+        target_id, _ = self.run_checks([Fail("boom")] * 3)
+        target = db.get_target(target_id)
+        self.assertEqual(target["consecutive_failures"], 3)
+        self.assertEqual(target["failure_alert_sent"], 1)
+        self.assertIsNotNone(target["first_failure_at"])
+        self.assertTrue(target["status"].startswith("error"))
+
+    def test_a_success_clears_the_failure_streak(self):
+        target_id, _ = self.run_checks([Fail(), Fail(), "real content"])
+        target = db.get_target(target_id)
+        self.assertEqual(target["consecutive_failures"], 0)
+        self.assertIsNone(target["first_failure_at"])
+        self.assertEqual(target["status"], "ok")
+
+    def test_intermittent_failures_never_reach_the_threshold(self):
+        self.run_checks([Fail(), "page", Fail(), "page", Fail(), "page"])
+        self.assertEqual(self.failure_mail, [], "the streak must reset on every success")
+
+    def test_recovery_is_reported_after_an_alerted_outage(self):
+        self.run_checks([Fail()] * 3 + ["back online"])
+        self.assertEqual(len(self.recovery_mail), 1)
+        failures, since = self.recovery_mail[0]
+        self.assertEqual(failures, 3)
+        self.assertTrue(since)
+
+    def test_no_recovery_notice_without_a_failure_alert(self):
+        self.run_checks([Fail(), "back online"])
+        self.assertEqual(self.recovery_mail, [], "nothing was reported, so nothing recovered")
+
+    def test_recovery_is_reported_once(self):
+        self.run_checks([Fail()] * 3 + ["back online", "back online"])
+        self.assertEqual(len(self.recovery_mail), 1)
+
+    def test_content_that_changed_during_an_outage_still_alerts(self):
+        self.run_checks(["original", Fail(), Fail(), Fail(), "changed while down"])
+        self.assertEqual(len(self.recovery_mail), 1)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("changed while down", self.sent[0])
+
+    def test_threshold_of_zero_disables_the_alert(self):
+        with mock.patch.object(monitor.config, "FAILURE_ALERT_THRESHOLD", 0):
+            self.run_checks([Fail()] * 10)
+        self.assertEqual(self.failure_mail, [])
+
+    def test_a_paused_target_is_not_checked(self):
+        target_id = db.add_target("https://example.com/p", "T", "generic", 15)
+        db.toggle_target(target_id, False)
+        with mock.patch.object(monitor, "get_scraper", return_value=StubScraper([Fail()] * 5)):
+            for _ in range(5):
+                monitor.check_target(target_id)
+        self.assertEqual(self.failure_mail, [])
+        self.assertEqual(db.get_target(target_id)["consecutive_failures"], 0)
+
+
 class TestMigration(unittest.TestCase):
     def test_migration_adds_columns_to_an_old_database(self):
         fd, path = tempfile.mkstemp(suffix=".db")
@@ -196,6 +357,11 @@ class TestMigration(unittest.TestCase):
                 finally:
                     probe.close()
                 self.assertIn("content", cols)
+                target_cols = set(target)
+                self.assertIn("consecutive_failures", target_cols)
+                self.assertIn("failure_alert_sent", target_cols)
+                self.assertIn("first_failure_at", target_cols)
+                self.assertEqual(target["consecutive_failures"], 0)
         finally:
             os.unlink(path)
 

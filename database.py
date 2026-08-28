@@ -24,6 +24,9 @@ def _migrate(conn):
     """Bring an existing database up to the current schema."""
     _add_column_if_missing(conn, "snapshots", "content", "TEXT")
     _add_column_if_missing(conn, "targets", "ignore_patterns", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "targets", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(conn, "targets", "failure_alert_sent", "INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(conn, "targets", "first_failure_at", "TEXT")
 
 
 def init_db():
@@ -40,7 +43,10 @@ def init_db():
             last_checked TEXT,
             last_changed TEXT,
             status TEXT DEFAULT 'pending',
-            ignore_patterns TEXT NOT NULL DEFAULT ''
+            ignore_patterns TEXT NOT NULL DEFAULT '',
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            failure_alert_sent INTEGER NOT NULL DEFAULT 0,
+            first_failure_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS snapshots (
@@ -136,8 +142,14 @@ def get_latest_snapshot(target_id):
     return dict(row) if row else None
 
 
-def save_snapshot(target_id, content_hash, content, content_excerpt):
-    """Record a new snapshot. Only called when content actually changed."""
+def save_snapshot(target_id, content_hash, content, content_excerpt, status="ok"):
+    """
+    Record a new snapshot, storing the outcome of the check that produced it.
+
+    Snapshot writing is the last step of a successful check, so it owns the
+    target's status: 'ok' for a baseline, 'changed' when this snapshot is the
+    result of a detected change.
+    """
     conn = get_db()
     now = datetime.utcnow().isoformat()
     conn.execute(
@@ -146,8 +158,9 @@ def save_snapshot(target_id, content_hash, content, content_excerpt):
         (target_id, content_hash, content or "", content_excerpt or "", now),
     )
     conn.execute(
-        "UPDATE targets SET last_checked = ?, status = 'ok' WHERE id = ?",
-        (now, target_id),
+        "UPDATE targets SET last_checked = ?, status = ?, consecutive_failures = 0,"
+        " failure_alert_sent = 0, first_failure_at = NULL WHERE id = ?",
+        (now, status, target_id),
     )
     conn.execute(
         "DELETE FROM snapshots WHERE target_id = ? AND id NOT IN ("
@@ -163,7 +176,8 @@ def touch_target(target_id):
     """Record a successful check that found no change, without a new snapshot."""
     conn = get_db()
     conn.execute(
-        "UPDATE targets SET last_checked = ?, status = 'ok' WHERE id = ?",
+        "UPDATE targets SET last_checked = ?, status = 'ok', consecutive_failures = 0,"
+        " failure_alert_sent = 0, first_failure_at = NULL WHERE id = ?",
         (datetime.utcnow().isoformat(), target_id),
     )
     conn.commit()
@@ -171,11 +185,43 @@ def touch_target(target_id):
 
 
 def mark_target_error(target_id, error_msg):
+    """
+    Record a failed check and return the target's failure state afterwards:
+    ``consecutive_failures``, ``failure_alert_sent`` and ``first_failure_at``.
+
+    The caller uses the count to decide whether the target has been failing
+    long enough to be worth an email, so the count is returned rather than
+    left for a second query that could race with the next check.
+    """
     conn = get_db()
     now = datetime.utcnow().isoformat()
     conn.execute(
-        "UPDATE targets SET last_checked = ?, status = ? WHERE id = ?",
-        (now, f"error: {error_msg[:200]}", target_id),
+        "UPDATE targets SET last_checked = ?, status = ?,"
+        " consecutive_failures = consecutive_failures + 1,"
+        " first_failure_at = COALESCE(first_failure_at, ?)"
+        " WHERE id = ?",
+        (now, f"error: {error_msg[:200]}", now, target_id),
+    )
+    row = conn.execute(
+        "SELECT consecutive_failures, failure_alert_sent, first_failure_at"
+        " FROM targets WHERE id = ?",
+        (target_id,),
+    ).fetchone()
+    conn.commit()
+    conn.close()
+    return dict(row) if row else {
+        "consecutive_failures": 0, "failure_alert_sent": 0, "first_failure_at": None,
+    }
+
+
+def mark_failure_alert_sent(target_id):
+    """
+    Note that this outage has already been mailed out, so the remaining checks
+    of the same outage stay silent. Cleared by the next successful check.
+    """
+    conn = get_db()
+    conn.execute(
+        "UPDATE targets SET failure_alert_sent = 1 WHERE id = ?", (target_id,)
     )
     conn.commit()
     conn.close()
@@ -189,7 +235,7 @@ def record_alert(target_id, label, url, change_summary, email_sent=False):
         (target_id, label, url, change_summary, now, 1 if email_sent else 0),
     )
     conn.execute(
-        "UPDATE targets SET last_changed = ?, status = 'changed' WHERE id = ?",
+        "UPDATE targets SET last_changed = ? WHERE id = ?",
         (now, target_id),
     )
     conn.commit()

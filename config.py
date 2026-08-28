@@ -15,6 +15,12 @@ ANALYST_EMAIL = os.getenv("ANALYST_EMAIL", "")
 
 DEFAULT_CHECK_INTERVAL = int(os.getenv("DEFAULT_CHECK_INTERVAL", "15"))
 
+# A failing target stops producing alerts, and no alerts is exactly what a
+# quiet target looks like — so repeated failures are mailed out rather than
+# left in the dashboard. One transient network blip should not send mail, so
+# the alert waits for this many consecutive failures. Set to 0 to disable.
+FAILURE_ALERT_THRESHOLD = int(os.getenv("FAILURE_ALERT_THRESHOLD", "3"))
+
 # Placeholder values shipped in .env.example. Treating them as unset keeps a
 # copied-but-unedited template from silently becoming the production secret.
 _PLACEHOLDERS = {

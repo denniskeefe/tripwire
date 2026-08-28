@@ -16,6 +16,7 @@ Monitor social media profiles for new activity and receive instant email alerts 
 - **Change detection** — content is normalized and hashed on every check; a unified diff over the full page is generated when something changes
 - **Noise filtering** — timestamps, engagement counters, and cache tokens are neutralized before comparison, plus per-target regex ignore patterns
 - **Email alerts** — HTML + plain-text email sent via SMTP the moment a change is detected, with the diff inline
+- **Failure alerts** — a target that fails several checks in a row is emailed about, so a dead scraper never passes for a quiet target; a recovery notice closes the loop
 - **Web dashboard** — add, pause, or delete targets; view live status and browse full alert history with a built-in diff viewer
 - **Password-protected** — the dashboard and API require a login; nothing is served anonymously
 
@@ -142,6 +143,30 @@ When a change is detected you'll receive an email with:
 - Target label, platform, and URL
 - Timestamp of detection
 - Unified diff of what changed
+
+### Failure alerts
+
+A target that cannot be scraped produces no change alerts — and no change alerts is
+exactly what a target with nothing to report looks like. Expired cookies, a page whose
+markup no longer yields any text, a blocked IP or a deleted profile would otherwise end
+the monitoring without ever saying so.
+
+So consecutive failures are counted per target, and once a target reaches
+`FAILURE_ALERT_THRESHOLD` (default 3) you get an email naming the error, how many checks
+have failed, and when the run started. At the default 15-minute interval that is roughly
+45 minutes of silence before you hear about it — long enough to ride out a transient
+network blip, short enough to matter.
+
+The alert is sent **once per outage**, not once per check; re-sending every 15 minutes
+would only teach you to filter it. The next successful check clears the counter and sends
+a short recovery notice, so an outage you were told about is always explicitly closed.
+
+If the failure email itself cannot be delivered, it is not recorded as sent and is retried
+on the next check.
+
+Set `FAILURE_ALERT_THRESHOLD=0` to switch failure mail off entirely. The dashboard shows
+the run length on the status badge regardless (`✗ Error 4×`), with the error, start time,
+and whether it has been mailed in the tooltip.
 
 ### Dashboard actions
 | Button | Action |
@@ -327,6 +352,7 @@ An invalid spec returns `400` with a `details` array naming each bad line:
 | `SMTP_FROM` | same as username | From address shown in alerts |
 | `ANALYST_EMAIL` | — | Recipient(s) — comma-separated for multiple |
 | `DEFAULT_CHECK_INTERVAL` | `15` | Default polling interval in minutes |
+| `FAILURE_ALERT_THRESHOLD` | `3` | Consecutive failed checks before a target is reported as failing; `0` disables |
 | `SECRET_KEY` | random per run | Flask session secret — set it to keep logins across restarts |
 | `DASHBOARD_PASSWORD` | generated per run | Dashboard login password |
 | `DASHBOARD_PASSWORD_HASH` | — | Password hash from `.venv/bin/python3 auth.py`; preferred over the above |

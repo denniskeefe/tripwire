@@ -10,8 +10,9 @@ import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+import config
 import database as db
-from notifier import send_alert
+from notifier import send_alert, send_failure_alert, send_recovery_notice
 from scrapers import get_scraper
 
 log = logging.getLogger("tripwire.monitor")
@@ -59,6 +60,48 @@ def _previous_text(snapshot: dict) -> str:
     return snapshot.get("content") or snapshot.get("content_excerpt") or ""
 
 
+def _handle_failure(target: dict, error: str):
+    """
+    Record a failed check and, once a target has failed enough times in a row,
+    email about it.
+
+    A failing target produces no change alerts, which is indistinguishable from
+    a target that simply has nothing to report — so silence here would end the
+    monitoring without ever saying so. The alert is sent once per outage and
+    the recovery notice closes it; re-sending on every check would train the
+    analyst to ignore it.
+    """
+    target_id = target["id"]
+    log.warning(f"  ✗ Scrape failed: {error}")
+    state = db.mark_target_error(target_id, error)
+    failures = state["consecutive_failures"]
+
+    threshold = config.FAILURE_ALERT_THRESHOLD
+    if threshold <= 0 or failures < threshold or state["failure_alert_sent"]:
+        return
+
+    # Only record the alert as sent if it actually went out, so a mail outage
+    # that coincides with a scrape outage retries on the next check.
+    if send_failure_alert(target, error, failures, state["first_failure_at"] or ""):
+        db.mark_failure_alert_sent(target_id)
+        log.warning(f"  ! Failure alert sent for [{target['label']}] after {failures} failures")
+    else:
+        log.error(f"  ! Failure alert could not be sent for [{target['label']}]")
+
+
+def _handle_recovery(target: dict):
+    """Notify that a target which had been reported as failing is back."""
+    if not target.get("failure_alert_sent"):
+        return
+    log.info(f"  ✓ [{target['label']}] recovered after "
+             f"{target.get('consecutive_failures', 0)} failed check(s)")
+    send_recovery_notice(
+        target,
+        target.get("consecutive_failures", 0),
+        target.get("first_failure_at") or "",
+    )
+
+
 def check_target(target_id: int):
     target = db.get_target(target_id)
     if not target or not target["active"]:
@@ -69,9 +112,12 @@ def check_target(target_id: int):
     result = scraper.scrape(target["url"], target.get("ignore_patterns", ""))
 
     if not result.success:
-        log.warning(f"  ✗ Scrape failed: {result.error}")
-        db.mark_target_error(target_id, result.error or "unknown error")
+        _handle_failure(target, result.error or "unknown error")
         return
+
+    # `target` was read before this check, so it still carries the failure
+    # state this success is about to clear.
+    _handle_recovery(target)
 
     prev = db.get_latest_snapshot(target_id)
 
@@ -91,8 +137,12 @@ def check_target(target_id: int):
     change_summary = _build_change_summary(_previous_text(prev), result.content)
 
     email_sent = send_alert(target, change_summary)
+    # The alert is recorded before the snapshot advances the baseline. The
+    # reverse order would drop the change entirely if the alert write failed,
+    # whereas this way a failure at worst re-reports it on the next check.
     db.record_alert(target_id, target["label"], target["url"], change_summary, email_sent)
-    db.save_snapshot(target_id, result.content_hash, result.content, result.content_excerpt)
+    db.save_snapshot(target_id, result.content_hash, result.content,
+                     result.content_excerpt, status="changed")
 
 
 def _make_job_id(target_id: int) -> str:

@@ -123,7 +123,7 @@ function renderTargets() {
       <td>${platformBadge(t.platform)}</td>
       <td>${t.check_interval}m</td>
       <td>${t.last_checked ? relTime(t.last_checked) : '<span style="color:var(--muted)">pending</span>'}</td>
-      <td>${statusBadge(t.status)}</td>
+      <td>${statusBadge(t)}</td>
       <td>
         <div class="action-group">
           <button class="btn btn-sm btn-ghost" onclick="checkNow(${t.id})" title="Check now">↻</button>
@@ -296,11 +296,20 @@ function platformBadge(platform) {
   return `<span class="platform-badge ${cls}">${label}</span>`;
 }
 
-function statusBadge(status) {
+function statusBadge(t) {
+  const status = t.status;
   if (!status || status === 'pending') return '<span class="status-badge status-pending">Pending</span>';
   if (status === 'ok')                 return '<span class="status-badge status-ok">✓ OK</span>';
   if (status === 'changed')            return '<span class="status-badge status-changed">★ Changed</span>';
-  if (status.startsWith('error'))      return `<span class="status-badge status-error" title="${esc(status)}">✗ Error</span>`;
+  if (status.startsWith('error')) {
+    // A repeatedly failing target is not being monitored at all, so the run
+    // length is shown on the badge rather than hidden in the tooltip.
+    const runs = t.consecutive_failures || 0;
+    const count = runs > 1 ? ` ${runs}×` : '';
+    const since = t.first_failure_at ? `\nFailing since ${t.first_failure_at}` : '';
+    const alerted = t.failure_alert_sent ? '\nFailure alert sent' : '';
+    return `<span class="status-badge status-error" title="${esc(status + since + alerted)}">✗ Error${count}</span>`;
+  }
   return `<span class="status-badge status-pending">${esc(status)}</span>`;
 }
 
