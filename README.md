@@ -353,6 +353,10 @@ An invalid spec returns `400` with a `details` array naming each bad line:
 | `ANALYST_EMAIL` | — | Recipient(s) — comma-separated for multiple |
 | `DEFAULT_CHECK_INTERVAL` | `15` | Default polling interval in minutes |
 | `FAILURE_ALERT_THRESHOLD` | `3` | Consecutive failed checks before a target is reported as failing; `0` disables |
+| `PORT` | `5500` | Port for `python app.py`; hosts such as Render set it themselves |
+| `MAX_CONCURRENT_CHECKS` | `3` | Checks running at once; each browser-based check starts a full Chromium |
+| `CHECK_JITTER_SECONDS` | `30` | Random delay added to each target's schedule |
+| `ALLOW_PRIVATE_URLS` | `0` | Targets must resolve to public addresses; set `1` to monitor internal pages |
 | `SECRET_KEY` | random per run | Flask session secret — set it to keep logins across restarts |
 | `DASHBOARD_PASSWORD` | generated per run | Dashboard login password |
 | `DASHBOARD_PASSWORD_HASH` | — | Password hash from `.venv/bin/python3 auth.py`; preferred over the above |

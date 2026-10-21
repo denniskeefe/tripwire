@@ -39,7 +39,7 @@ bp = Blueprint("auth", __name__)
 # Endpoints reachable without a session. Everything else — including any URL
 # that does not resolve — requires one, so an anonymous caller cannot map the
 # API by watching which paths 404 and which redirect.
-PUBLIC_ENDPOINTS = {"auth.login", "static"}
+PUBLIC_ENDPOINTS = {"auth.login", "static", "healthz"}
 
 # Failed logins are throttled per client address. A single shared password is
 # exactly the shape brute force is good against, and the window is long enough

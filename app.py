@@ -3,7 +3,6 @@ Tripwire — OSINT Social Media Monitor
 Flask web application + REST API
 """
 
-import re
 import atexit
 from flask import Flask, jsonify, render_template, request
 
@@ -11,6 +10,8 @@ import auth
 import config
 import database as db
 import monitor
+import urlsafety
+from scrapers import detect_platform
 from scrapers.normalize import NOISE_RULES, validate_ignore_spec
 
 app = Flask(__name__)
@@ -25,20 +26,24 @@ auth.init_app(app)
 # Helpers
 # ---------------------------------------------------------------------------
 
-def detect_platform(url: str) -> str:
-    u = url.lower()
-    if re.search(r"(twitter\.com|x\.com)/\w", u):
-        return "twitter"
-    if re.search(r"linkedin\.com/(in|company)/", u):
-        return "linkedin"
-    if re.search(r"facebook\.com/", u):
-        return "facebook"
-    return "generic"
+def _bounded_int(value, default, low, high):
+    """Parse an integer request value, clamped to [low, high]; default if unparseable."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(number, high))
 
 
 # ---------------------------------------------------------------------------
 # Web UI
 # ---------------------------------------------------------------------------
+
+@app.route("/healthz")
+def healthz():
+    """Unauthenticated liveness probe for the host's health check. Reveals nothing."""
+    return jsonify({"status": "ok"})
+
 
 @app.route("/")
 def index():
@@ -70,16 +75,40 @@ def api_add_targets():
     # Support both a list and a raw newline-separated string
     raw = data.get("urls_raw", "")
     urls = data.get("urls", [])
-    if raw:
-        urls += [u.strip() for u in raw.splitlines() if u.strip()]
+    if isinstance(urls, str):
+        urls = urls.splitlines()
+    if not isinstance(urls, list):
+        return jsonify({"error": "'urls' must be a list of strings"}), 400
+    if isinstance(raw, str) and raw:
+        urls = urls + raw.splitlines()
 
-    urls = [u for u in urls if u.startswith("http")]
+    # Deduplicate while keeping order, and drop blanks.
+    seen = set()
+    cleaned = []
+    for u in urls:
+        u = u.strip() if isinstance(u, str) else ""
+        if u and u not in seen:
+            seen.add(u)
+            cleaned.append(u)
+    urls = cleaned
     if not urls:
         return jsonify({"error": "No valid URLs provided"}), 400
 
-    label_prefix = data.get("label_prefix", "").strip()
-    check_interval = int(data.get("check_interval", config.DEFAULT_CHECK_INTERVAL))
-    check_interval = max(5, min(check_interval, 1440))  # clamp 5 min – 24 h
+    # Reject the whole request if any URL is unacceptable, so a batch is never
+    # half-added. Besides shape, this refuses hosts that resolve to private or
+    # internal addresses (see urlsafety.py).
+    rejected = []
+    for u in urls:
+        problem = urlsafety.check_url(u)
+        if problem:
+            rejected.append(f"{u[:200]}: {problem}")
+    if rejected:
+        return jsonify({"error": "Invalid URLs", "details": rejected}), 400
+
+    label_prefix = str(data.get("label_prefix") or "").strip()
+    # clamp 5 min – 24 h
+    check_interval = _bounded_int(
+        data.get("check_interval"), config.DEFAULT_CHECK_INTERVAL, 5, 1440)
 
     ignore_patterns = data.get("ignore_patterns", "") or ""
     errors = validate_ignore_spec(ignore_patterns)
@@ -154,9 +183,11 @@ def api_check_now(target_id):
     target = db.get_target(target_id)
     if not target:
         return jsonify({"error": "Not found"}), 404
-    # Run synchronously in the request thread (keep it simple for manual triggers)
-    monitor.check_now(target_id)
-    return jsonify(db.get_target(target_id))
+    # Queued on the same bounded worker pool as scheduled checks. A browser
+    # scrape can take 30+ seconds, which would otherwise hold a request thread
+    # open; the dashboard polls the target until last_checked moves.
+    monitor.queue_check(target_id)
+    return jsonify({"queued": True, "target": db.get_target(target_id)}), 202
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +196,7 @@ def api_check_now(target_id):
 
 @app.route("/api/alerts", methods=["GET"])
 def api_list_alerts():
-    limit = int(request.args.get("limit", 50))
+    limit = _bounded_int(request.args.get("limit"), 50, 1, 500)
     return jsonify(db.get_alerts(limit=limit))
 
 
@@ -182,4 +213,6 @@ def create_app():
 
 
 if __name__ == "__main__":
-    create_app().run(host="0.0.0.0", port=5500, debug=False)
+    # Development server only. Deployments run it under gunicorn (see render.yaml):
+    #   gunicorn "app:create_app()"
+    create_app().run(host="0.0.0.0", port=config.PORT, debug=False)

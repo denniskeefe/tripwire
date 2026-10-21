@@ -64,4 +64,19 @@ TWITTER_COOKIES_FILE  = os.getenv("TWITTER_COOKIES_FILE", "")
 LINKEDIN_COOKIES_FILE = os.getenv("LINKEDIN_COOKIES_FILE", "")
 FACEBOOK_COOKIES_FILE = os.getenv("FACEBOOK_COOKIES_FILE", "")
 
+# ── Server / scheduling ────────────────────────────────────────────────────
+# Render (and most hosts) tell the app which port to bind through $PORT.
+PORT = int(os.getenv("PORT", "5500"))
+
+# Checks run on a bounded worker pool. Each Playwright check starts a full
+# Chromium, so an unbounded pool can exhaust the memory of a small instance.
+MAX_CONCURRENT_CHECKS = max(1, int(os.getenv("MAX_CONCURRENT_CHECKS", "3")))
+
+# Random delay (seconds) added to each target's schedule so targets created
+# together do not all fire in the same instant.
+CHECK_JITTER_SECONDS = max(0, int(os.getenv("CHECK_JITTER_SECONDS", "30")))
+
+# Targets must resolve to public addresses unless this is set. See urlsafety.py.
+ALLOW_PRIVATE_URLS = os.getenv("ALLOW_PRIVATE_URLS", "0").lower() not in ("0", "", "false", "no")
+
 DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "tripwire.db"))

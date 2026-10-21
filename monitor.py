@@ -7,18 +7,34 @@ When content changes, an alert is recorded and an email is sent.
 
 import difflib
 import logging
+import sqlite3
+import threading
+from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 import config
 import database as db
 from notifier import send_alert, send_failure_alert, send_recovery_notice
-from scrapers import get_scraper
+from scrapers import detect_platform, get_scraper
 
 log = logging.getLogger("tripwire.monitor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 
-scheduler = BackgroundScheduler(timezone="UTC")
+# Every check, scheduled or manual, runs on this one bounded pool. A browser
+# scrape starts a full Chromium, so the pool size is what caps memory use.
+# `coalesce` folds missed runs into one and `max_instances` stops a slow target
+# from stacking up overlapping checks of itself.
+scheduler = BackgroundScheduler(
+    timezone="UTC",
+    executors={"default": ThreadPoolExecutor(config.MAX_CONCURRENT_CHECKS)},
+    job_defaults={"coalesce": True, "max_instances": 1},
+)
+
+# Guards against the same target being checked twice at once (a manual check
+# landing while the scheduled one is running would diff against a stale baseline).
+_running: set[int] = set()
+_running_lock = threading.Lock()
 
 
 MAX_DIFF_LINES = 200
@@ -103,12 +119,35 @@ def _handle_recovery(target: dict):
 
 
 def check_target(target_id: int):
+    with _running_lock:
+        if target_id in _running:
+            log.info(f"Target {target_id} is already being checked — skipping")
+            return
+        _running.add(target_id)
+    try:
+        _check_target(target_id)
+    except sqlite3.IntegrityError:
+        # The target was deleted while its check was in flight, so the rows
+        # this check tried to write no longer have a parent. Nothing to keep.
+        log.info(f"Target {target_id} was deleted during its check — discarding result")
+    finally:
+        with _running_lock:
+            _running.discard(target_id)
+
+
+def _check_target(target_id: int):
     target = db.get_target(target_id)
     if not target or not target["active"]:
         return
 
     log.info(f"Checking [{target['label']}] {target['url']}")
-    scraper = get_scraper(target["platform"])
+    # Never trust the stored platform alone: a browser scraper carries login
+    # cookies, so it only runs when the URL really belongs to that site.
+    platform = target["platform"]
+    if platform != "generic" and detect_platform(target["url"]) != platform:
+        log.warning(f"  Platform '{platform}' does not match the URL — using generic scraper")
+        platform = "generic"
+    scraper = get_scraper(platform)
     result = scraper.scrape(target["url"], target.get("ignore_patterns", ""))
 
     if not result.success:
@@ -156,7 +195,10 @@ def schedule_target(target: dict):
         scheduler.remove_job(job_id)
     scheduler.add_job(
         check_target,
-        trigger=IntervalTrigger(minutes=int(target["check_interval"])),
+        trigger=IntervalTrigger(
+            minutes=int(target["check_interval"]),
+            jitter=config.CHECK_JITTER_SECONDS or None,
+        ),
         args=[target["id"]],
         id=job_id,
         replace_existing=True,
@@ -173,8 +215,22 @@ def unschedule_target(target_id: int):
 
 
 def check_now(target_id: int):
-    """Trigger an immediate check outside the normal schedule."""
+    """Run a check immediately in the calling thread."""
     check_target(target_id)
+
+
+def queue_check(target_id: int):
+    """
+    Queue an immediate check on the scheduler's worker pool and return at once.
+    Repeated requests for the same target collapse into one pending job.
+    """
+    scheduler.add_job(
+        check_target,
+        args=[target_id],
+        id=f"manual_{target_id}",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
 
 
 def start():

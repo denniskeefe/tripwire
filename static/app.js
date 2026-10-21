@@ -195,7 +195,16 @@ async function toggleTarget(id, currentlyActive) {
 async function checkNow(id) {
   const row = document.getElementById(`row-${id}`);
   if (row) row.style.opacity = '.5';
+  const before = (targets.find(t => t.id === id) || {}).last_checked;
   await api(`/api/targets/${id}/check`, { method: 'POST' });
+  // The check runs in the background; poll until the target reports a new
+  // last_checked (success and failure both set it), for up to two minutes.
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    await loadTargets();
+    const now = (targets.find(t => t.id === id) || {}).last_checked;
+    if (now !== before) break;
+  }
   await loadTargets();
   await loadAlerts();
 }

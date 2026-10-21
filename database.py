@@ -9,8 +9,17 @@ SNAPSHOT_RETENTION = 50
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    # A new connection per call, used from scheduler threads and request
+    # threads at once. The timeout makes a writer wait for the lock instead of
+    # failing with "database is locked"; WAL lets readers proceed during a
+    # write. Foreign keys are off by default in SQLite and are per-connection,
+    # so without the pragma ON DELETE CASCADE does nothing and deleting a
+    # target leaves its snapshots and alerts behind.
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 

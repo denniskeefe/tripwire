@@ -3,7 +3,11 @@ services:
     name: tripwire
     runtime: python
     buildCommand: pip install -r requirements.txt && playwright install chromium --with-deps
-    startCommand: python app.py
+    # One worker only: the scheduler lives in the web process, so more workers
+    # would each poll every target and send every alert more than once. Threads
+    # serve concurrent requests; the long timeout covers slow responses.
+    startCommand: gunicorn --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT "app:create_app()"
+    healthCheckPath: /healthz
     plan: starter
     disk:
       name: tripwire-data
@@ -36,5 +40,7 @@ services:
         sync: false
       - key: ANALYST_EMAIL
         sync: false
+      - key: MAX_CONCURRENT_CHECKS
+        value: "2"
       - key: DEFAULT_CHECK_INTERVAL
         value: "15"
